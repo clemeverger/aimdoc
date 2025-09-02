@@ -1,0 +1,224 @@
+import asyncio
+import json
+import os
+import tempfile
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+import subprocess
+import shutil
+
+from ..models import JobStatus, ScrapeRequest, JobStatusResponse, JobResults
+
+
+class JobService:
+    """Service for managing scrapy jobs"""
+    
+    def __init__(self):
+        # In-memory job storage (in production, use a database)
+        self.jobs: Dict[str, Dict[str, Any]] = {}
+        self.job_processes: Dict[str, subprocess.Popen] = {}
+        
+        # Ensure jobs directory exists
+        self.jobs_dir = Path("jobs")
+        self.jobs_dir.mkdir(exist_ok=True)
+    
+    def create_job(self, request: ScrapeRequest) -> str:
+        """Create a new scrape job"""
+        job_id = str(uuid.uuid4())
+        
+        # Create job directory
+        job_dir = self.jobs_dir / job_id
+        job_dir.mkdir(exist_ok=True)
+        
+        # Create manifest file
+        manifest_data = {
+            "name": request.name,
+            "url": str(request.url),
+        }
+        
+        if request.output_mode:
+            manifest_data["output"] = {"mode": request.output_mode}
+        
+        manifest_path = job_dir / "manifest.json"
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest_data, f, indent=2)
+        
+        # Store job info
+        self.jobs[job_id] = {
+            "job_id": job_id,
+            "status": JobStatus.PENDING,
+            "created_at": datetime.now(),
+            "request": request.dict(),
+            "manifest_path": str(manifest_path),
+            "job_dir": str(job_dir),
+            "build_dir": str(job_dir / "build"),
+            "progress": {"pages_found": 0, "pages_scraped": 0, "files_created": 0}
+        }
+        
+        return job_id
+    
+    async def start_job(self, job_id: str) -> bool:
+        """Start a scrape job"""
+        if job_id not in self.jobs:
+            return False
+        
+        job = self.jobs[job_id]
+        if job["status"] != JobStatus.PENDING:
+            return False
+        
+        # Update job status
+        job["status"] = JobStatus.RUNNING
+        job["started_at"] = datetime.now()
+        
+        # Start scrapy process asynchronously
+        asyncio.create_task(self._run_scrapy(job_id))
+        
+        return True
+    
+    async def _run_scrapy(self, job_id: str):
+        """Run scrapy in a subprocess"""
+        job = self.jobs[job_id]
+        
+        try:
+            # Change to job directory
+            original_cwd = os.getcwd()
+            os.chdir(job["job_dir"])
+            
+            # Run scrapy command
+            cmd = [
+                "scrapy", "crawl", "aimdoc", 
+                "-a", f"manifest={job['manifest_path']}",
+                "-s", f"FEEDS={{'{job['build_dir']}/items.json':{{}}}}",
+            ]
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=original_cwd  # Run from original project root
+            )
+            
+            self.job_processes[job_id] = process
+            
+            # Wait for completion
+            stdout, stderr = process.communicate()
+            
+            # Update job status based on return code
+            if process.returncode == 0:
+                job["status"] = JobStatus.COMPLETED
+                job["completed_at"] = datetime.now()
+                
+                # Check if files were created
+                build_path = Path(job["build_dir"])
+                if build_path.exists():
+                    files = list(build_path.glob("**/*"))
+                    job["result_summary"] = {
+                        "files_created": len([f for f in files if f.is_file()]),
+                        "build_size": sum(f.stat().st_size for f in files if f.is_file()),
+                        "build_path": str(build_path)
+                    }
+                    job["progress"]["files_created"] = len([f for f in files if f.is_file()])
+                else:
+                    job["error_message"] = "No output files were created"
+                    job["status"] = JobStatus.FAILED
+            else:
+                job["status"] = JobStatus.FAILED
+                job["error_message"] = f"Scrapy failed with code {process.returncode}: {stderr}"
+                job["completed_at"] = datetime.now()
+        
+        except Exception as e:
+            job["status"] = JobStatus.FAILED
+            job["error_message"] = str(e)
+            job["completed_at"] = datetime.now()
+        
+        finally:
+            # Clean up process reference
+            if job_id in self.job_processes:
+                del self.job_processes[job_id]
+            
+            os.chdir(original_cwd)
+    
+    def get_job_status(self, job_id: str) -> Optional[JobStatusResponse]:
+        """Get job status"""
+        if job_id not in self.jobs:
+            return None
+        
+        job = self.jobs[job_id]
+        return JobStatusResponse(
+            job_id=job_id,
+            status=job["status"],
+            created_at=job["created_at"],
+            started_at=job.get("started_at"),
+            completed_at=job.get("completed_at"),
+            progress=job.get("progress"),
+            error_message=job.get("error_message"),
+            result_summary=job.get("result_summary")
+        )
+    
+    def list_jobs(self, limit: Optional[int] = None) -> List[JobStatusResponse]:
+        """List all jobs"""
+        jobs = []
+        for job_id in sorted(self.jobs.keys(), reverse=True):  # Most recent first
+            jobs.append(self.get_job_status(job_id))
+        
+        if limit:
+            jobs = jobs[:limit]
+        
+        return jobs
+    
+    def get_job_results(self, job_id: str) -> Optional[JobResults]:
+        """Get job results"""
+        if job_id not in self.jobs:
+            return None
+        
+        job = self.jobs[job_id]
+        if job["status"] != JobStatus.COMPLETED:
+            return None
+        
+        build_path = Path(job["build_dir"])
+        if not build_path.exists():
+            return None
+        
+        # List all files in build directory
+        files = []
+        for file_path in build_path.glob("**/*"):
+            if file_path.is_file():
+                files.append(str(file_path.relative_to(build_path)))
+        
+        return JobResults(
+            job_id=job_id,
+            status=job["status"],
+            files=files,
+            build_path=str(build_path),
+            metadata=job.get("result_summary", {})
+        )
+    
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job and its files"""
+        if job_id not in self.jobs:
+            return False
+        
+        # Kill process if running
+        if job_id in self.job_processes:
+            try:
+                self.job_processes[job_id].terminate()
+                del self.job_processes[job_id]
+            except:
+                pass
+        
+        # Remove job directory
+        job_dir = Path(self.jobs[job_id]["job_dir"])
+        if job_dir.exists():
+            shutil.rmtree(job_dir)
+        
+        # Remove from memory
+        del self.jobs[job_id]
+        
+        return True
+
+
+# Global job service instance
+job_service = JobService()

@@ -9,6 +9,7 @@ import { createDownloadCommand } from './commands/download';
 import { createResultsCommand } from './commands/results';
 import { createDeleteCommand } from './commands/delete';
 import { createConfigCommand } from './commands/config';
+import { createDiagnoseCommand } from './commands/diagnose';
 import { printError } from './utils';
 
 const program = new Command();
@@ -28,6 +29,7 @@ program.addCommand(createDownloadCommand());
 program.addCommand(createResultsCommand());
 program.addCommand(createDeleteCommand());
 program.addCommand(createConfigCommand());
+program.addCommand(createDiagnoseCommand());
 
 // Add global error handling
 process.on('unhandledRejection', (reason, promise) => {
@@ -55,6 +57,7 @@ program.on('--help', () => {
   console.log('  $ aimdoc list');
   console.log('  $ aimdoc status abc123def');
   console.log('  $ aimdoc download abc123def');
+  console.log('  $ aimdoc diagnose abc123def --verbose');
   console.log('  $ aimdoc config --api-url http://localhost:8000');
   console.log('');
   console.log('Environment variables:');

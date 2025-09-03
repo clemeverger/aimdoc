@@ -36,6 +36,7 @@ class AimdocSpider(scrapy.Spider):
         self.chapter_order = {}
         self.chapters = {}  # Store chapter information extracted from URLs
         self.pages_scraped_count = 0  # Track scraped pages for progress
+        self.failed_pages = []  # Track pages that failed to scrape
         
         # Extract minimal configuration from manifest
         self.name_project = self.manifest.get("name", "aimdoc")
@@ -142,13 +143,38 @@ class AimdocSpider(scrapy.Spider):
         self.logger.info(f"=== PARSING PAGE: {response.url} ===")
         self.logger.info(f"Status: {response.status}, Size: {len(response.body)} bytes")
         
-        # Extract page content
-        item = self._extract_page_content(response)
-        self.logger.info(f"Extracted item: title='{item['title']}', content_length={len(item['html'])}")
-        yield item
+        # Check for HTTP errors
+        if response.status >= 400:
+            error_info = {
+                'url': response.url,
+                'status': response.status,
+                'reason': f'HTTP {response.status} error'
+            }
+            self.failed_pages.append(error_info)
+            self.logger.warning(f"❌ Failed to scrape {response.url}: HTTP {response.status}")
+            return
         
-        # Update progress after yielding item
-        self._update_scraped_progress()
+        # Extract page content
+        try:
+            item = self._extract_page_content(response)
+            self.logger.info(f"Extracted item: title='{item['title']}', content_length={len(item['html'])}")
+            
+            # Check if we got meaningful content
+            if not item['html'] or len(item['html'].strip()) < 100:
+                self.logger.warning(f"⚠️ Page {response.url} has very little content: {len(item['html'])} chars")
+            
+            yield item
+            
+            # Update progress after yielding item
+            self._update_scraped_progress()
+        except Exception as e:
+            error_info = {
+                'url': response.url,
+                'status': response.status,
+                'reason': f'Parse error: {str(e)}'
+            }
+            self.failed_pages.append(error_info)
+            self.logger.error(f"❌ Failed to parse {response.url}: {str(e)}")
 
     def _extract_page_content(self, response):
         """Extract content from a single page"""
@@ -188,12 +214,22 @@ class AimdocSpider(scrapy.Spider):
         self.logger.info(f"Response status: {response.status}")
         self.logger.info(f"Response size: {len(response.body)} bytes")
         
+        # Track detailed filtering statistics
+        filtering_stats = {
+            'total_urls': 0,
+            'skipped_scope': {'count': 0, 'examples': []},
+            'skipped_not_doc': {'count': 0, 'examples': []},
+            'skipped_duplicate': {'count': 0, 'examples': []},
+            'accepted': {'count': 0, 'examples': []}
+        }
+        
         try:
             root = ElementTree.fromstring(response.body)
             # Handle XML namespace
             namespace = {"": "http://www.sitemaps.org/schemas/sitemap/0.9"}
             
             all_url_elements = root.findall(".//url", namespace)
+            filtering_stats['total_urls'] = len(all_url_elements)
             self.logger.info(f"Found {len(all_url_elements)} total URL elements in sitemap")
             
             urls_found = 0
@@ -207,14 +243,17 @@ class AimdocSpider(scrapy.Spider):
                 if loc_element is not None:
                     url = loc_element.text
                     
-                    if i < 5:  # Log first 5 URLs for debugging
+                    if i < 10:  # Log first 10 URLs for debugging
                         self.logger.info(f"Processing URL #{i+1}: {url}")
                     
                     # Check if URL is in scope
                     in_scope = self._in_scope(url)
                     if not in_scope:
                         urls_skipped_scope += 1
-                        if i < 5:
+                        filtering_stats['skipped_scope']['count'] += 1
+                        if len(filtering_stats['skipped_scope']['examples']) < 5:
+                            filtering_stats['skipped_scope']['examples'].append(url)
+                        if i < 10:
                             self.logger.info(f"  -> SKIPPED: Not in scope")
                         continue
                     
@@ -222,18 +261,28 @@ class AimdocSpider(scrapy.Spider):
                     is_doc = self._is_documentation_url(url)
                     if not is_doc:
                         urls_skipped_not_doc += 1
-                        if i < 5:
+                        filtering_stats['skipped_not_doc']['count'] += 1
+                        if len(filtering_stats['skipped_not_doc']['examples']) < 5:
+                            filtering_stats['skipped_not_doc']['examples'].append(url)
+                        if i < 10:
                             self.logger.info(f"  -> SKIPPED: Not documentation URL")
                         continue
                     
                     # Check if already discovered
                     if url in self.discovered_urls:
                         urls_skipped_duplicate += 1
-                        if i < 5:
+                        filtering_stats['skipped_duplicate']['count'] += 1
+                        if len(filtering_stats['skipped_duplicate']['examples']) < 5:
+                            filtering_stats['skipped_duplicate']['examples'].append(url)
+                        if i < 10:
                             self.logger.info(f"  -> SKIPPED: Duplicate URL")
                         continue
                     
-                    if i < 5:
+                    filtering_stats['accepted']['count'] += 1
+                    if len(filtering_stats['accepted']['examples']) < 5:
+                        filtering_stats['accepted']['examples'].append(url)
+                    
+                    if i < 10:
                         self.logger.info(f"  -> ACCEPTED: Will scrape this URL")
                     
                     # Extract chapter from URL structure
@@ -296,13 +345,27 @@ class AimdocSpider(scrapy.Spider):
                 import traceback
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
             
-            # Log detailed statistics
+            # Log detailed statistics with examples
             self.logger.info(f"=== SITEMAP PROCESSING COMPLETE ===")
-            self.logger.info(f"Total URLs in sitemap: {len(all_url_elements)}")
-            self.logger.info(f"URLs skipped (not in scope): {urls_skipped_scope}")
-            self.logger.info(f"URLs skipped (not documentation): {urls_skipped_not_doc}")
-            self.logger.info(f"URLs skipped (duplicates): {urls_skipped_duplicate}")
-            self.logger.info(f"URLs ACCEPTED for scraping: {urls_found}")
+            self.logger.info(f"Total URLs in sitemap: {filtering_stats['total_urls']}")
+            
+            # Log skipped URLs with examples
+            self.logger.info(f"URLs skipped (not in scope): {filtering_stats['skipped_scope']['count']}")
+            if filtering_stats['skipped_scope']['examples']:
+                self.logger.info(f"  Examples: {filtering_stats['skipped_scope']['examples']}")
+            
+            self.logger.info(f"URLs skipped (not documentation): {filtering_stats['skipped_not_doc']['count']}")
+            if filtering_stats['skipped_not_doc']['examples']:
+                self.logger.info(f"  Examples: {filtering_stats['skipped_not_doc']['examples']}")
+            
+            self.logger.info(f"URLs skipped (duplicates): {filtering_stats['skipped_duplicate']['count']}")
+            if filtering_stats['skipped_duplicate']['examples']:
+                self.logger.info(f"  Examples: {filtering_stats['skipped_duplicate']['examples']}")
+            
+            self.logger.info(f"URLs ACCEPTED for scraping: {filtering_stats['accepted']['count']}")
+            if filtering_stats['accepted']['examples']:
+                self.logger.info(f"  Examples: {filtering_stats['accepted']['examples']}")
+            
             self.logger.info(f"Chapters created: {len(chapter_urls)}")
             
             if urls_found > 0:
@@ -315,6 +378,16 @@ class AimdocSpider(scrapy.Spider):
                 self.logger.warning("NO URLS FOUND TO SCRAPE!")
                 self.logger.warning(f"Base URL pattern: {self.base_url}")
                 self.logger.warning("Check _in_scope() and _is_documentation_url() logic")
+                
+            # Summary validation
+            total_processed = (filtering_stats['skipped_scope']['count'] + 
+                             filtering_stats['skipped_not_doc']['count'] + 
+                             filtering_stats['skipped_duplicate']['count'] + 
+                             filtering_stats['accepted']['count'])
+            if total_processed != filtering_stats['total_urls']:
+                self.logger.warning(f"VALIDATION WARNING: Total processed ({total_processed}) != Total URLs ({filtering_stats['total_urls']})")
+            else:
+                self.logger.info(f"✓ All {filtering_stats['total_urls']} URLs processed correctly")
             
         except ElementTree.ParseError as e:
             self.logger.error(f"Could not parse sitemap XML: {response.url}")
@@ -335,8 +408,8 @@ class AimdocSpider(scrapy.Spider):
         
         # Look for docs section and extract chapter
         try:
-            # Find any documentation base path
-            doc_bases = ['docs', 'documentation', 'guide', 'guides', 'api', 'reference', 'manual', 'help']
+            # Find documentation base path
+            doc_bases = ['docs']
             docs_index = -1
             
             for i, part in enumerate(path_parts):
@@ -349,8 +422,8 @@ class AimdocSpider(scrapy.Spider):
                 chapter_slug = path_parts[docs_index + 1]
                 chapter = self._format_slug_to_title(chapter_slug)
                 
-                # Order based on alphabetical + common patterns
-                order = self._get_generic_order(chapter_slug)
+                # Simple alphabetical ordering
+                order = ord(chapter_slug.lower()[0]) if chapter_slug else 999
                 
                 # Title from the deepest path segment or chapter name
                 if len(path_parts) > docs_index + 2:
@@ -394,48 +467,6 @@ class AimdocSpider(scrapy.Spider):
                 
         return ' '.join(title_words)
     
-    def _get_generic_order(self, slug):
-        """Get order number based on common documentation patterns"""
-        # Common documentation ordering patterns
-        priority_patterns = {
-            'introduction': 1,
-            'intro': 1, 
-            'overview': 2,
-            'getting-started': 3,
-            'quickstart': 3,
-            'installation': 4,
-            'setup': 4,
-            'basics': 5,
-            'fundamentals': 5,
-            'guide': 10,
-            'guides': 10,
-            'tutorial': 15,
-            'tutorials': 15,
-            'examples': 20,
-            'advanced': 50,
-            'api': 60,
-            'reference': 70,
-            'cli': 75,
-            'configuration': 80,
-            'troubleshooting': 90,
-            'faq': 95,
-            'changelog': 98,
-            'migration': 99
-        }
-        
-        slug_lower = slug.lower()
-        
-        # Check for exact matches first
-        if slug_lower in priority_patterns:
-            return priority_patterns[slug_lower]
-            
-        # Check for partial matches
-        for pattern, order in priority_patterns.items():
-            if pattern in slug_lower:
-                return order
-                
-        # Default: alphabetical order offset
-        return 500 + ord(slug_lower[0]) if slug_lower else 999
     
     
     def _is_documentation_url(self, url):
@@ -508,3 +539,50 @@ class AimdocSpider(scrapy.Spider):
         # Normalize whitespace and generate hash
         normalized = re.sub(r'\s+', ' ', html.strip())
         return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
+
+    def closed(self, reason):
+        """Called when spider closes - log final summary"""
+        self.logger.info(f"=== SPIDER CLOSING: {reason} ===")
+        self.logger.info(f"Pages discovered: {len(self.discovered_urls)}")
+        self.logger.info(f"Pages successfully scraped: {self.pages_scraped_count}")
+        self.logger.info(f"Pages failed: {len(self.failed_pages)}")
+        
+        if self.failed_pages:
+            self.logger.warning(f"❌ FAILED PAGES DETAILS:")
+            for i, failed in enumerate(self.failed_pages, 1):
+                self.logger.warning(f"  {i}. {failed['url']} - {failed['reason']}")
+        
+        # Calculate the expected vs actual scraping counts
+        expected_pages = len(self.discovered_urls)
+        actual_scraped = self.pages_scraped_count
+        failed_count = len(self.failed_pages)
+        
+        if actual_scraped + failed_count != expected_pages:
+            missing = expected_pages - actual_scraped - failed_count
+            self.logger.warning(f"⚠️ DISCREPANCY: {missing} pages unaccounted for")
+            self.logger.warning(f"  Expected: {expected_pages}, Scraped: {actual_scraped}, Failed: {failed_count}")
+        else:
+            self.logger.info(f"✓ All discovered pages accounted for: {expected_pages} total")
+        
+        # Write final summary to progress file
+        try:
+            import os
+            manifest_dir = os.path.dirname(self.manifest_path) if hasattr(self, 'manifest_path') else os.getcwd()
+            summary_file = os.path.join(manifest_dir, "scraping_summary.json")
+            
+            summary_data = {
+                "spider_close_reason": reason,
+                "pages_discovered": len(self.discovered_urls),
+                "pages_scraped": self.pages_scraped_count,
+                "pages_failed": len(self.failed_pages),
+                "failed_pages": self.failed_pages,
+                "discovered_urls": list(self.discovered_urls),
+                "chapters": self.chapters
+            }
+            
+            with open(summary_file, 'w', encoding='utf-8') as f:
+                json.dump(summary_data, f, indent=2)
+            self.logger.info(f"📄 Summary written to: {summary_file}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to write scraping summary: {e}")

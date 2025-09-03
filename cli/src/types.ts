@@ -31,6 +31,9 @@ export interface JobStatusResponse {
   error_message?: string
   result_summary?: {
     files_created?: number
+    pages_scraped?: number
+    pages_failed?: number
+    pages_discovered?: number
     build_size?: number
     build_path?: string
   }
@@ -79,6 +82,9 @@ export interface WebSocketJobUpdate {
   }
   result_summary?: {
     files_created?: number
+    pages_scraped?: number
+    pages_failed?: number
+    pages_discovered?: number
     build_size?: number
     build_path?: string
   }

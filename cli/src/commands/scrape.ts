@@ -253,7 +253,19 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
 
             console.log('\n✅ Scraping completed successfully!')
             if (update.result_summary) {
-              printSuccess(`Created ${update.result_summary.files_created} files from ${pages_scraped} pages`)
+              const summary = update.result_summary
+              const successMessage = `✓ Created ${summary.files_created} files from ${pages_scraped} pages`
+              
+              // Add diagnostic info if there were failed pages
+              if (summary.pages_failed && summary.pages_failed > 0) {
+                console.log(`${successMessage} (${summary.pages_failed} pages failed)`)
+                console.log(`ℹ️  ${chalk.yellow(`${summary.pages_discovered || 'Unknown'} pages discovered, ${summary.pages_failed} failed to scrape`)}`)
+              } else {
+                console.log(successMessage)
+                if (summary.pages_discovered) {
+                  console.log(`ℹ️  ${chalk.green(`All ${summary.pages_discovered} discovered pages scraped successfully`)}`)
+                }
+              }
             }
 
             await downloadResults(api, jobId, projectName, outputDir, folderName)

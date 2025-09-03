@@ -153,15 +153,33 @@ class JobService:
             # Update job status based on scraped content first, then return code
             job_path = Path(job["job_dir"])
             items_file = job_path / "items.json"
+            summary_file = job_path / "scraping_summary.json"
             
             scraped_items = 0
-            if items_file.exists():
+            failed_pages = 0
+            discovered_pages = 0
+            
+            # Try to get detailed info from summary first
+            if summary_file.exists():
                 try:
-                    import json
+                    with open(summary_file, 'r', encoding='utf-8') as f:
+                        summary = json.load(f)
+                        scraped_items = summary.get("pages_scraped", 0)
+                        failed_pages = summary.get("pages_failed", 0)
+                        discovered_pages = summary.get("pages_discovered", 0)
+                        print(f"[{datetime.now()}] RUN_SCRAPY: Summary - Discovered: {discovered_pages}, Scraped: {scraped_items}, Failed: {failed_pages}")
+                except (json.JSONDecodeError, FileNotFoundError) as e:
+                    print(f"[{datetime.now()}] RUN_SCRAPY: Failed to read summary: {e}")
+            
+            # Fallback to items.json if summary not available
+            if scraped_items == 0 and items_file.exists():
+                try:
                     with open(items_file, 'r', encoding='utf-8') as f:
                         items = json.load(f)
                         scraped_items = len(items) if isinstance(items, list) else 0
-                except (json.JSONDecodeError, FileNotFoundError):
+                        print(f"[{datetime.now()}] RUN_SCRAPY: Fallback count from items.json: {scraped_items}")
+                except (json.JSONDecodeError, FileNotFoundError) as e:
+                    print(f"[{datetime.now()}] RUN_SCRAPY: Failed to read items.json: {e}")
                     scraped_items = 0
             
             if scraped_items > 0:
@@ -197,18 +215,26 @@ class JobService:
                 job["result_summary"] = {
                     "files_created": file_count,
                     "pages_scraped": scraped_items,
+                    "pages_failed": failed_pages,
+                    "pages_discovered": discovered_pages,
                     "build_size": total_size,
                     "build_path": str(job_path)
                 }
                 job["progress"]["pages_scraped"] = scraped_items
                 job["progress"]["files_created"] = file_count
                 
+                # Create completion message with failure info if relevant
+                if failed_pages > 0:
+                    message = f"Scraping completed with some issues! Created {file_count} files from {scraped_items} pages ({failed_pages} pages failed)"
+                else:
+                    message = f"Scraping completed successfully! Created {file_count} files from {scraped_items} pages"
+                
                 # Send completion update
                 await self.broadcast_job_update(job_id, {
                     "type": "status_update",
                     "status": "completed",
                     "phase": "completed",
-                    "message": f"Scraping completed! Created {file_count} files from {scraped_items} pages",
+                    "message": message,
                     "progress": job["progress"],
                     "result_summary": job["result_summary"]
                 })

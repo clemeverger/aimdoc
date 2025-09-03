@@ -16,8 +16,6 @@ class ProgressTrackerPipeline:
         self.files_created = 0
         self.pages_found = 0
         self.sitemap_processed = False
-        self.last_write_time = 0
-        self.write_interval = 2  # Write every 2 seconds max
         self.manifest_path = None
         self._lock = threading.RLock()  # Thread-safe updates
         
@@ -55,11 +53,8 @@ class ProgressTrackerPipeline:
                     if files_from_stats > 0:
                         self.files_created = files_from_stats
                 
-                # Write progress file periodically (non-blocking check)
-                current_time = time.time()
-                if current_time - self.last_write_time >= self.write_interval:
-                    self._write_progress_async()
-                    self.last_write_time = current_time
+                # Write progress file immediately (non-blocking)
+                self._write_progress_async()
         
         return item
     

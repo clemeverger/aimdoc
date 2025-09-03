@@ -313,23 +313,18 @@ class JobService:
                 print(f"[{datetime.now()}] MONITOR: Process completed with return code {return_code}")
                 return "", "", return_code
             
-            # Check progress every 5 seconds for responsive WebSocket updates
-            if loop_count % 5 == 0:
-                try:
-                    current_item_count = 0
-                    current_files_count = 0
-                    
-                    # Check for progress file from spider and detect phase transitions
-                    # Only log progress file checks occasionally to reduce noise
-                    if loop_count % 20 == 0:  # Log every 20 seconds instead of every 2 seconds
-                        print(f"[{datetime.now()}] MONITOR: Checking for progress file: {progress_file}, exists: {os.path.exists(progress_file)}")
-                    if os.path.exists(progress_file):
+            # Check progress every second for responsive WebSocket updates
+            try:
+                current_item_count = 0
+                current_files_count = 0
+                
+                # Check for progress file from spider and detect phase transitions
+                print(f"[{datetime.now()}] MONITOR: Checking for progress file: {progress_file}, exists: {os.path.exists(progress_file)}")
+                if os.path.exists(progress_file):
                         try:
                             with open(progress_file, 'r', encoding='utf-8') as f:
                                 progress_data = json.load(f)
-                                # Only log progress data when it changes significantly
-                                if loop_count % 10 == 0:
-                                    print(f"[{datetime.now()}] MONITOR: Progress data: {progress_data}")
+                                print(f"[{datetime.now()}] MONITOR: Progress data: {progress_data}")
                                 # Check if sitemap discovery is complete
                                 if not sitemap_discovery_complete and progress_data.get("sitemap_processed", False):
                                     sitemap_discovery_complete = True
@@ -357,94 +352,80 @@ class JobService:
                                     job["progress"]["files_created"] = progress_data["files_created"]
                         except Exception as e:
                             print(f"[{datetime.now()}] MONITOR: Error reading progress file: {e}")
-                    else:
-                        # Debug: list files in job directory
-                        if loop_count % 20 == 0:  # Only log every 20 seconds to avoid spam
-                            try:
-                                files = os.listdir(job["job_dir"])
-                                print(f"[{datetime.now()}] MONITOR: Files in job dir {job['job_dir']}: {files}")
-                            except Exception as e:
-                                print(f"[{datetime.now()}] MONITOR: Error listing job dir: {e}")
-                    
-                    # Count files created in real-time
-                    current_files_count = 0
-                    project_name = job["request"].get("name", "default-project")
-                    docs_path = Path(job["job_dir"]) / "docs" / project_name
-                    
-                    # Debug: log paths we're checking
-                    if loop_count % 10 == 0:  # Log every 10 seconds
-                        print(f"[{datetime.now()}] MONITOR: Looking for files in: {docs_path}, exists: {docs_path.exists()}")
-                    
-                    if docs_path.exists():
-                        try:
-                            files = list(docs_path.glob("**/*"))
-                            file_files = [f for f in files if f.is_file()]
-                            current_files_count = len(file_files)
-                            if loop_count % 10 == 0:  # Log every 10 seconds
-                                print(f"[{datetime.now()}] MONITOR: Found {current_files_count} files in {docs_path}")
-                        except Exception as e:
-                            print(f"[{datetime.now()}] MONITOR: Error counting files: {e}")
-                    elif loop_count % 10 == 0:  # Check alternative paths
-                        # Maybe files are created elsewhere, let's check the job dir directly
-                        job_path = Path(job["job_dir"])
-                        if job_path.exists():
-                            all_files = list(job_path.glob("**/*.md"))
-                            print(f"[{datetime.now()}] MONITOR: Alternative check - found {len(all_files)} .md files in {job_path}")
-                    
-                    # Detect converting phase when files start being created
-                    if current_phase == "scraping" and current_files_count > 0 and job["progress"].get("files_created", 0) == 0:
-                        current_phase = "converting"
-                        await self.broadcast_job_update(job_id, {
-                            "type": "status_update",
-                            "status": "running",
-                            "phase": "converting",
-                            "message": "Converting pages to markdown...",
-                            "progress": job["progress"]
-                        })
-                        print(f"[{datetime.now()}] MONITOR: Phase transition to converting")
-                    
-                    # Send update if progress changed or every 10 seconds
-                    time_since_last_update = (current_time - last_update_time).total_seconds()
-                    
-                    # Use fallback counts only if progress.json data is not available
-                    current_pages_scraped = job["progress"].get("pages_scraped", current_item_count)
-                    current_files_created = job["progress"].get("files_created", current_files_count)
-                    
-                    files_changed = current_files_created != job["progress"].get("files_created", 0)
-                    if current_pages_scraped != last_item_count or files_changed or time_since_last_update >= 10:
-                        # Only update with fallback data if progress.json doesn't have the data
-                        if "pages_scraped" not in job["progress"] or job["progress"]["pages_scraped"] == 0:
-                            job["progress"]["pages_scraped"] = current_item_count
-                        if "files_created" not in job["progress"] or job["progress"]["files_created"] == 0:
-                            job["progress"]["files_created"] = current_files_count
-                        
-                        # Create phase-appropriate message
-                        if current_phase == "discovering":
-                            message = "Discovering sitemap and pages..."
-                        elif current_phase == "scraping":
-                            message = f"Scraping pages... {job['progress'].get('pages_scraped', 0)}/{job['progress'].get('pages_found', 0)} completed"
-                        elif current_phase == "converting":
-                            message = f"Converting to markdown... {job['progress'].get('files_created', 0)} files created"
-                        else:
-                            message = f"Processing... {job['progress'].get('pages_scraped', 0)} pages scraped, {job['progress'].get('files_created', 0)} files created"
-                        
-                        # Send WebSocket update
-                        await self.broadcast_job_update(job_id, {
-                            "type": "status_update",
-                            "status": "running",
-                            "phase": current_phase,
-                            "message": message,
-                            "progress": job["progress"]
-                        })
-                        
-                        last_item_count = job["progress"].get("pages_scraped", current_item_count)
-                        last_update_time = current_time
-                        print(f"[{datetime.now()}] MONITOR: Progress update [{current_phase}] - {job['progress'].get('pages_scraped', 0)} pages scraped, {job['progress'].get('pages_found', 0)} pages found, {job['progress'].get('files_created', 0)} files created")
                 
-                except Exception as e:
-                    print(f"[{datetime.now()}] MONITOR: Error reading progress: {e}")
+                # Count files created in real-time
+                current_files_count = 0
+                project_name = job["request"].get("name", "default-project")
+                docs_path = Path(job["job_dir"]) / "docs" / project_name
+                
+                print(f"[{datetime.now()}] MONITOR: Looking for files in: {docs_path}, exists: {docs_path.exists()}")
+                
+                if docs_path.exists():
+                    try:
+                        files = list(docs_path.glob("**/*"))
+                        file_files = [f for f in files if f.is_file()]
+                        current_files_count = len(file_files)
+                        print(f"[{datetime.now()}] MONITOR: Found {current_files_count} files in {docs_path}")
+                    except Exception as e:
+                        print(f"[{datetime.now()}] MONITOR: Error counting files: {e}")
+                
+                # Detect converting phase when files start being created
+                if current_phase == "scraping" and current_files_count > 0 and job["progress"].get("files_created", 0) == 0:
+                    current_phase = "converting"
+                    await self.broadcast_job_update(job_id, {
+                        "type": "status_update",
+                        "status": "running",
+                        "phase": "converting",
+                        "message": "Converting pages to markdown...",
+                        "progress": job["progress"]
+                    })
+                    print(f"[{datetime.now()}] MONITOR: Phase transition to converting")
+                
+                # Send update if progress changed or more frequently during scraping
+                time_since_last_update = (current_time - last_update_time).total_seconds()
+                
+                # Use fallback counts only if progress.json data is not available
+                current_pages_scraped = job["progress"].get("pages_scraped", current_item_count)
+                current_files_created = job["progress"].get("files_created", current_files_count)
+                
+                files_changed = current_files_created != job["progress"].get("files_created", 0)
+                # More frequent updates during scraping phase, less frequent otherwise
+                update_threshold = 1 if current_phase == "scraping" else 5
+                if current_pages_scraped != last_item_count or files_changed or time_since_last_update >= update_threshold:
+                    # Only update with fallback data if progress.json doesn't have the data
+                    if "pages_scraped" not in job["progress"] or job["progress"]["pages_scraped"] == 0:
+                        job["progress"]["pages_scraped"] = current_item_count
+                    if "files_created" not in job["progress"] or job["progress"]["files_created"] == 0:
+                        job["progress"]["files_created"] = current_files_count
+                    
+                    # Create phase-appropriate message
+                    if current_phase == "discovering":
+                        message = "Discovering sitemap and pages..."
+                    elif current_phase == "scraping":
+                        message = f"Scraping pages... {job['progress'].get('pages_scraped', 0)}/{job['progress'].get('pages_found', 0)} completed"
+                    elif current_phase == "converting":
+                        message = f"Converting to markdown... {job['progress'].get('files_created', 0)} files created"
+                    else:
+                        message = f"Processing... {job['progress'].get('pages_scraped', 0)} pages scraped, {job['progress'].get('files_created', 0)} files created"
+                    
+                    # Send WebSocket update
+                    await self.broadcast_job_update(job_id, {
+                        "type": "status_update",
+                        "status": "running",
+                        "phase": current_phase,
+                        "message": message,
+                        "progress": job["progress"]
+                    })
+                    
+                    last_item_count = job["progress"].get("pages_scraped", current_item_count)
+                    last_update_time = current_time
+                    print(f"[{datetime.now()}] MONITOR: Progress update [{current_phase}] - {job['progress'].get('pages_scraped', 0)} pages scraped, {job['progress'].get('pages_found', 0)} pages found, {job['progress'].get('files_created', 0)} files created")
+                
+            except Exception as e:
+                print(f"[{datetime.now()}] MONITOR: Error reading progress: {e}")
             
-            if loop_count % 10 == 0:  # Log every 10 seconds
+            # Log every 30 seconds to reduce noise
+            if loop_count % 30 == 0:
                 elapsed = (current_time - start_time).total_seconds()
                 pages_scraped = job["progress"].get("pages_scraped", last_item_count)
                 print(f"[{datetime.now()}] MONITOR: Job {job_id} still running, elapsed: {elapsed:.1f}s, {pages_scraped} pages scraped")

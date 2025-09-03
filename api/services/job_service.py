@@ -567,6 +567,7 @@ class JobService:
         
         # Remove job directory
         job_dir = Path(self.jobs[job_id]["job_dir"])
+        
         if job_dir.exists():
             shutil.rmtree(job_dir)
         

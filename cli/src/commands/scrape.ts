@@ -50,8 +50,6 @@ export function createScrapeCommand(): Command {
         const job = await api.createScrapeJob(scrapeRequest)
         createSpinner.succeed(`Job created: ${chalk.bold(job.job_id)}`)
 
-        printInfo(`Job details can be found at: ${chalk.underline(`http://localhost:8000/docs#/jobs/get_job_status_api_v1_jobs__job_id__get`)}`)
-
         // Wait for job completion and download results
         await waitForCompletionWithWebSocket(api, job.job_id, scrapeRequest.name, outputDir, folderName)
       } catch (error) {
@@ -159,13 +157,17 @@ function stopProgressBar(bar: cliProgress.SingleBar | null): void {
 }
 
 async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
-  console.log('Connecting to job...')
-
   let ws: WebSocket | null = null
   let progressBar: cliProgress.SingleBar | null = null
   let currentSpinner: ReturnType<typeof ora> | null = null
   let lastProgress = { pages_scraped: 0, files_created: 0, pages_found: 0 }
   let currentPhase: JobPhase | null = null
+
+  // Start connection spinner
+  const connectionSpinner = ora({
+    text: 'Connecting to job...',
+    discardStdin: false,
+  }).start()
 
   try {
     ws = await api.connectToJobWebSocket(
@@ -174,7 +176,8 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
         if (update.type === 'status_update') {
           // Handle initial connection message
           if (update.message && update.message.includes('Connected to job')) {
-            console.log(`✓ Connected to job ${jobId}! Starting scrape...`)
+            connectionSpinner.succeed('Connected to job')
+            printInfo('Starting scrape...')
           }
 
           const phase = update.phase || JobPhase.DISCOVERING
@@ -255,7 +258,7 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
             if (update.result_summary) {
               const summary = update.result_summary
               const successMessage = `✓ Created ${summary.files_created} files from ${pages_scraped} pages`
-              
+
               // Add diagnostic info if there were failed pages
               if (summary.pages_failed && summary.pages_failed > 0) {
                 console.log(`${successMessage} (${summary.pages_failed} pages failed)`)
@@ -284,7 +287,7 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
         }
       },
       (error: Error) => {
-        console.log('❌ WebSocket connection failed')
+        connectionSpinner.fail('WebSocket connection failed')
         printError('WebSocket connection failed', error)
         process.exit(1)
       },
@@ -295,7 +298,7 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
 
     // Connection message will come from WebSocket initial update
   } catch (error) {
-    console.log('❌ WebSocket unavailable')
+    connectionSpinner.fail('WebSocket unavailable')
     printError('WebSocket unavailable', error as Error)
     process.exit(1)
   }

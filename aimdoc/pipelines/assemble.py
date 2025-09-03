@@ -16,7 +16,6 @@ class AssemblePipeline:
         self.page_metadata = []
         self.output_dir = None
         self.files_created_count = 0
-        self.batch_size = 50  # Process pages in batches to manage memory
         
         # Pre-compile regex patterns for performance
         self._docs_pattern = re.compile(r'(/docs/)(.*)', re.IGNORECASE)

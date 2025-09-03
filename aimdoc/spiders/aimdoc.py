@@ -2,8 +2,7 @@ import json
 import hashlib
 import re
 from datetime import datetime, timezone
-import fnmatch
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 import scrapy
@@ -21,7 +20,7 @@ class AimdocSpider(scrapy.Spider):
         "AUTOTHROTTLE_ENABLED": True,
     }
 
-    def __init__(self, manifest, since=None, *args, **kwargs):
+    def __init__(self, manifest, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
         # Store manifest path for progress file
@@ -30,8 +29,6 @@ class AimdocSpider(scrapy.Spider):
         # Load manifest file
         with open(manifest, 'r', encoding='utf-8') as f:
             self.manifest = json.load(f)
-        
-        self.since = since
         self.discovered_urls = set()
         self.chapter_order = {}
         self.chapters = {}  # Store chapter information extracted from URLs
@@ -48,9 +45,6 @@ class AimdocSpider(scrapy.Spider):
             
         self.base_url = base_url.rstrip('/')
         self.seed_urls = self._generate_discovery_urls()
-        
-        # Auto-generate scope from base URL
-        self.scope_patterns = [f"{self.base_url}/**"]
         
         # Use hardcoded universal selectors
         self.selectors = {

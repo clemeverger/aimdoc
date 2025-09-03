@@ -176,7 +176,7 @@ async def websocket_job_updates(websocket: WebSocket, job_id: str):
         await websocket.send_json({
             "type": "status_update",
             "status": job_status.status,
-            "message": f"Connected to job {job_id}",
+            "message": f"Monitoring job {job_id[:8]}...",
             "progress": job_status.progress,
             "result_summary": job_status.result_summary
         })

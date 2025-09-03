@@ -2,8 +2,11 @@ import { Command } from 'commander';
 import inquirer from 'inquirer';
 import ora from 'ora';
 import chalk from 'chalk';
+import path from 'path';
+import fs from 'fs-extra';
+import WebSocket from 'ws';
 import { AimdocAPI } from '../api';
-import { ScrapeRequest, JobStatus } from '../types';
+import { ScrapeRequest, JobStatus, WebSocketJobUpdate } from '../types';
 import { isValidUrl, formatJobStatus, printError, printSuccess, printInfo } from '../utils';
 
 export function createScrapeCommand(): Command {
@@ -14,8 +17,10 @@ export function createScrapeCommand(): Command {
     .argument('[url]', 'URL of the documentation site to scrape')
     .option('-n, --name <name>', 'Project name')
     .option('-m, --mode <mode>', 'Output mode (bundle|single)', 'bundle')
-    .option('-w, --wait', 'Wait for job completion')
+    .option('--no-wait', 'Don\'t wait for job completion (just create and exit)')
     .option('--no-progress', 'Disable progress monitoring')
+    .option('--no-auto-download', 'Disable automatic download of results')
+    .option('-o, --output <dir>', 'Output directory for downloaded results', '.')
     .action(async (url: string | undefined, options) => {
       try {
         const api = new AimdocAPI();
@@ -40,14 +45,22 @@ export function createScrapeCommand(): Command {
         
         printInfo(`Job URL: ${chalk.underline(`http://localhost:8000/docs#/jobs/get_job_status_api_v1_jobs__job_id__get`)}`);
         
-        if (options.wait) {
-          await waitForCompletion(api, job.job_id, !options.noProgress);
+        if (!options.noWait) {
+          await waitForCompletionWithWebSocket(
+            api, 
+            job.job_id, 
+            scrapeRequest.name,
+            !options.noProgress,
+            !options.noAutoDownload,
+            options.output
+          );
         } else {
           printInfo(`Use ${chalk.bold(`aimdoc status ${job.job_id}`)} to check progress`);
           printInfo(`Use ${chalk.bold(`aimdoc download ${job.job_id}`)} to download results when complete`);
         }
         
       } catch (error) {
+        console.error('Detailed error:', error);
         printError('Failed to create scrape job', error as Error);
         process.exit(1);
       }
@@ -109,7 +122,104 @@ async function getScrapeRequest(url: string | undefined, options: any): Promise<
   return request;
 }
 
-async function waitForCompletion(api: AimdocAPI, jobId: string, showProgress: boolean): Promise<void> {
+async function waitForCompletionWithWebSocket(
+  api: AimdocAPI, 
+  jobId: string, 
+  projectName: string,
+  showProgress: boolean, 
+  autoDownload: boolean,
+  outputDir: string
+): Promise<void> {
+  const spinner = showProgress ? ora('Connecting to job...').start() : null;
+  let ws: WebSocket | null = null;
+
+  try {
+    ws = await api.connectToJobWebSocket(
+      jobId,
+      async (update: WebSocketJobUpdate) => {
+        if (update.type === 'status_update') {
+          if (showProgress && spinner) {
+            let message = update.message || 'Processing...';
+            
+            if (update.progress) {
+              const { pages_found = 0, pages_scraped = 0, files_created = 0 } = update.progress;
+              if (pages_found > 0 || pages_scraped > 0 || files_created > 0) {
+                message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`;
+              }
+            }
+            
+            spinner.text = message;
+          }
+
+          if (update.status === JobStatus.COMPLETED) {
+            if (spinner) spinner.succeed('Scraping completed successfully!');
+            
+            if (update.result_summary) {
+              printSuccess(`Created ${update.result_summary.files_created} files from ${update.progress?.pages_scraped || 0} pages`);
+            }
+
+            // Auto-download results if enabled
+            if (autoDownload) {
+              await downloadResults(api, jobId, projectName, outputDir);
+            } else {
+              printInfo(`Use ${chalk.bold(`aimdoc download ${jobId}`)} to download the results`);
+            }
+            
+            ws?.close();
+          } else if (update.status === JobStatus.FAILED) {
+            if (spinner) spinner.fail('Scraping failed');
+            printError(update.error || update.message || 'Job failed with unknown error');
+            ws?.close();
+            process.exit(1);
+          }
+        }
+      },
+      (error: Error) => {
+        console.log('WebSocket error, falling back to polling...');
+        // Don't exit, let it fall through to fallback
+      },
+      () => {
+        // WebSocket closed
+      }
+    );
+
+    if (spinner) spinner.text = 'Connected! Starting scrape...';
+
+  } catch (error) {
+    // Fallback to polling if WebSocket fails
+    if (spinner) {
+      spinner.text = 'WebSocket unavailable, falling back to polling...';
+    }
+    await waitForCompletionFallback(api, jobId, projectName, showProgress, autoDownload, outputDir);
+  }
+}
+
+async function downloadResults(api: AimdocAPI, jobId: string, projectName: string, outputDir: string): Promise<void> {
+  const downloadSpinner = ora('Downloading results...').start();
+  
+  try {
+    const outputPath = path.join(outputDir, `${projectName}-results.zip`);
+    await fs.ensureDir(path.dirname(outputPath));
+    
+    await api.downloadJobZip(jobId, outputPath);
+    
+    downloadSpinner.succeed(`Results downloaded to: ${chalk.underline(outputPath)}`);
+    printInfo(`Extract with: ${chalk.bold(`unzip "${outputPath}"`)}`);
+  } catch (error) {
+    downloadSpinner.fail('Failed to download results');
+    printError('Download error', error as Error);
+    printInfo(`You can try downloading manually: ${chalk.bold(`aimdoc download ${jobId}`)}`);
+  }
+}
+
+async function waitForCompletionFallback(
+  api: AimdocAPI, 
+  jobId: string, 
+  projectName: string,
+  showProgress: boolean, 
+  autoDownload: boolean,
+  outputDir: string
+): Promise<void> {
   const spinner = showProgress ? ora('Starting scrape...').start() : null;
   
   let lastStatus: JobStatus | null = null;
@@ -142,12 +252,13 @@ async function waitForCompletion(api: AimdocAPI, jobId: string, showProgress: bo
         
         if (status.result_summary) {
           printSuccess(`Created ${status.result_summary.files_created} files`);
-          if (status.result_summary.build_path) {
-            printInfo(`Results saved to: ${chalk.underline(status.result_summary.build_path)}`);
-          }
         }
         
-        printInfo(`Use ${chalk.bold(`aimdoc download ${jobId}`)} to download the results`);
+        if (autoDownload) {
+          await downloadResults(api, jobId, projectName, outputDir);
+        } else {
+          printInfo(`Use ${chalk.bold(`aimdoc download ${jobId}`)} to download the results`);
+        }
         break;
       }
       

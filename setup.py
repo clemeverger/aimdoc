@@ -13,6 +13,10 @@ setup(
         'markdownify>=0.11.0',
         'lxml>=4.9.0',
         'requests>=2.28.0',
+        'fastapi>=0.104.0',
+        'uvicorn[standard]>=0.24.0',
+        'websockets>=15.0.0',
+        'pydantic>=2.5.0',
     ],
     python_requires='>=3.8',
     classifiers=[

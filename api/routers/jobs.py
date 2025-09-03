@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pathlib import Path
 from typing import List, Optional
@@ -155,3 +155,72 @@ async def cancel_job(job_id: str):
         return {"message": f"Job {job_id} cancelled successfully"}
     else:
         raise HTTPException(status_code=500, detail=f"Failed to cancel job {job_id}")
+
+
+@router.websocket("/jobs/{job_id}/ws")
+async def websocket_job_updates(websocket: WebSocket, job_id: str):
+    """WebSocket endpoint for real-time job updates"""
+    await websocket.accept()
+    
+    # Check if job exists
+    job_status = job_service.get_job_status(job_id)
+    if not job_status:
+        await websocket.close(code=4004, reason="Job not found")
+        return
+    
+    # Add connection to job service
+    await job_service.add_websocket_connection(job_id, websocket)
+    
+    try:
+        # Send initial status
+        await websocket.send_json({
+            "type": "status_update",
+            "status": job_status.status,
+            "message": f"Connected to job {job_id}",
+            "progress": job_status.progress,
+            "result_summary": job_status.result_summary
+        })
+        
+        # Keep connection alive and handle incoming messages
+        while True:
+            try:
+                message = await websocket.receive_text()
+                # Echo back for keepalive
+                await websocket.send_json({"type": "pong", "message": "Connection alive"})
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        print(f"WebSocket error for job {job_id}: {e}")
+    finally:
+        # Remove connection
+        await job_service.remove_websocket_connection(job_id, websocket)
+
+
+@router.get("/jobs/{job_id}/download-zip")
+async def download_job_zip(job_id: str):
+    """Download job results as a ZIP file"""
+    job_status = job_service.get_job_status(job_id)
+    
+    if not job_status:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    if job_status.status != JobStatus.COMPLETED:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Job {job_id} is not completed. Current status: {job_status.status}"
+        )
+    
+    # Create ZIP file
+    zip_path = job_service.create_zip_download(job_id)
+    if not zip_path or not Path(zip_path).exists():
+        raise HTTPException(status_code=500, detail="Failed to create ZIP file")
+    
+    # Get job request info for filename
+    results = job_service.get_job_results(job_id)
+    filename = f"{results.metadata.get('name', job_id)}-results.zip" if results else f"{job_id}-results.zip"
+    
+    return FileResponse(
+        path=zip_path,
+        filename=filename,
+        media_type='application/zip'
+    )

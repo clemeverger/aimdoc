@@ -1,4 +1,6 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
+import WebSocket from 'ws';
+import fs from 'fs-extra';
 import {
   ScrapeRequest,
   JobResponse,
@@ -6,7 +8,8 @@ import {
   JobListResponse,
   JobResults,
   Config,
-  CLIError
+  CLIError,
+  WebSocketJobUpdate
 } from './types';
 import { getConfig } from './config';
 
@@ -73,6 +76,64 @@ export class AimdocAPI {
 
   async cancelJob(jobId: string): Promise<void> {
     await this.client.post(`/api/v1/jobs/${jobId}/cancel`);
+  }
+
+  async downloadJobZip(jobId: string, outputPath: string): Promise<void> {
+    const response = await this.client.get(`/api/v1/jobs/${jobId}/download-zip`, {
+      responseType: 'arraybuffer'
+    });
+    
+    const buffer = Buffer.from(response.data);
+    await fs.writeFile(outputPath, buffer);
+  }
+
+  createJobWebSocket(jobId: string): WebSocket {
+    const wsUrl = this.config.api_url.replace(/^http/, 'ws') + `/api/v1/jobs/${jobId}/ws`;
+    return new WebSocket(wsUrl);
+  }
+
+  async connectToJobWebSocket(
+    jobId: string,
+    onUpdate: (update: WebSocketJobUpdate) => void,
+    onError?: (error: Error) => void,
+    onClose?: () => void
+  ): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const ws = this.createJobWebSocket(jobId);
+
+      ws.on('open', () => {
+        resolve(ws);
+      });
+
+      ws.on('message', (data: string) => {
+        try {
+          const update: WebSocketJobUpdate = JSON.parse(data);
+          onUpdate(update);
+        } catch (error) {
+          onError?.(new Error('Failed to parse WebSocket message'));
+        }
+      });
+
+      ws.on('error', (error: Error) => {
+        onError?.(error);
+        reject(error);
+      });
+
+      ws.on('close', () => {
+        onClose?.();
+      });
+
+      // Set up keepalive
+      const keepAliveInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('ping');
+        }
+      }, 30000);
+
+      ws.on('close', () => {
+        clearInterval(keepAliveInterval);
+      });
+    });
   }
 
   async healthCheck(): Promise<boolean> {

@@ -15,12 +15,55 @@ export function createDownloadCommand(): Command {
     .argument('<job-id>', 'Job ID to download')
     .option('-o, --output <dir>', 'Output directory', '.')
     .option('-f, --file <file>', 'Download specific file only')
+    .option('--zip', 'Download as ZIP file')
     .option('--overwrite', 'Overwrite existing files')
     .action(async (jobId: string, options) => {
       try {
         const api = new AimdocAPI();
         
-        // Get job results
+        // Handle ZIP download
+        if (options.zip) {
+          const spinner = ora('Downloading job results as ZIP...').start();
+          
+          try {
+            // Get job details for filename
+            const status = await api.getJobStatus(jobId);
+            const projectName = sanitizeFilename(status.result_summary?.build_path?.split('/').pop() || jobId);
+            const outputPath = path.resolve(options.output, `${projectName}-results.zip`);
+            
+            // Check if file exists
+            if (!options.overwrite && await fs.pathExists(outputPath)) {
+              spinner.stop();
+              const answer = await inquirer.prompt([
+                {
+                  type: 'confirm',
+                  name: 'overwrite',
+                  message: `File ${outputPath} already exists. Overwrite?`,
+                  default: false
+                }
+              ]);
+              
+              if (!answer.overwrite) {
+                console.log('Download cancelled.');
+                return;
+              }
+            }
+            
+            await fs.ensureDir(path.dirname(outputPath));
+            await api.downloadJobZip(jobId, outputPath);
+            
+            spinner.succeed(`ZIP downloaded to: ${chalk.underline(outputPath)}`);
+            printInfo(`Extract with: ${chalk.bold(`unzip "${outputPath}"`)}`);
+            return;
+            
+          } catch (error) {
+            spinner.fail('Failed to download ZIP');
+            printError('ZIP download error', error as Error);
+            process.exit(1);
+          }
+        }
+        
+        // Get job results for individual file downloads
         const spinner = ora('Getting job results...').start();
         const results = await api.getJobResults(jobId);
         spinner.succeed(`Found ${results.files.length} files`);

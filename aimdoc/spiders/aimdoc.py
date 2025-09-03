@@ -64,10 +64,17 @@ class AimdocSpider(scrapy.Spider):
             f"{self.base_url}/sitemap_index.xml"
         ]
     
-    async def start(self):
-        """Generate initial requests for automatic discovery (async version)"""
+    def start_requests(self):
+        """Generate initial requests for automatic discovery"""
+        self.logger.info(f"=== SPIDER START_REQUESTS ===")
+        self.logger.info(f"Base URL: {self.base_url}")
+        self.logger.info(f"Project: {self.name_project}")
+        self.logger.info(f"Discovery URLs: {self.seed_urls}")
+        
         for url in self.seed_urls:
+            self.logger.info(f"Creating request for: {url}")
             if url.endswith('robots.txt'):
+                self.logger.info(f"-> robots.txt request: {url}")
                 yield Request(
                     url,
                     callback=self._parse_robots,
@@ -75,6 +82,7 @@ class AimdocSpider(scrapy.Spider):
                     errback=self._handle_discovery_error
                 )
             elif url.endswith(('.xml', 'sitemap')):
+                self.logger.info(f"-> sitemap request: {url}")
                 yield Request(
                     url,
                     callback=self._parse_sitemap,
@@ -85,6 +93,9 @@ class AimdocSpider(scrapy.Spider):
 
     def _parse_robots(self, response):
         """Parse robots.txt to find sitemap URLs"""
+        self.logger.info(f"=== PARSING ROBOTS.TXT: {response.url} ===")
+        self.logger.info(f"Response status: {response.status}")
+        
         sitemap_urls = []
         
         for line in response.text.split('\n'):
@@ -92,10 +103,12 @@ class AimdocSpider(scrapy.Spider):
             if line.lower().startswith('sitemap:'):
                 sitemap_url = line[8:].strip()
                 sitemap_urls.append(sitemap_url)
+                self.logger.info(f"Found sitemap in robots.txt: {sitemap_url}")
                 
         if sitemap_urls:
             self.logger.info(f"Found {len(sitemap_urls)} sitemap(s) in robots.txt")
             for sitemap_url in sitemap_urls:
+                self.logger.info(f"Requesting sitemap: {sitemap_url}")
                 yield Request(
                     sitemap_url,
                     callback=self._parse_sitemap,
@@ -103,9 +116,10 @@ class AimdocSpider(scrapy.Spider):
                 )
         else:
             self.logger.info("No sitemaps found in robots.txt, trying fallback")
-            # Fallback to direct sitemap.xml
+            fallback_url = f"{self.base_url}/sitemap.xml"
+            self.logger.info(f"Fallback sitemap request: {fallback_url}")
             yield Request(
-                f"{self.base_url}/sitemap.xml",
+                fallback_url,
                 callback=self._parse_sitemap,
                 meta={"depth": 0},
                 errback=self._handle_discovery_error
@@ -113,13 +127,20 @@ class AimdocSpider(scrapy.Spider):
     
     def _handle_discovery_error(self, failure):
         """Handle discovery errors gracefully"""
-        self.logger.warning(f"Discovery failed for {failure.request.url}: {failure.value}")
+        self.logger.warning(f"=== DISCOVERY ERROR ===")
+        self.logger.warning(f"Failed URL: {failure.request.url}")
+        self.logger.warning(f"Error: {failure.value}")
+        self.logger.warning(f"Error type: {type(failure.value)}")
         return []
 
     def parse_page(self, response):
-        """Main parsing method for documentation pages"""        
+        """Main parsing method for documentation pages"""
+        self.logger.info(f"=== PARSING PAGE: {response.url} ===")
+        self.logger.info(f"Status: {response.status}, Size: {len(response.body)} bytes")
+        
         # Extract page content
         item = self._extract_page_content(response)
+        self.logger.info(f"Extracted item: title='{item['title']}', content_length={len(item['html'])}")
         yield item
 
     def _extract_page_content(self, response):
@@ -156,39 +177,73 @@ class AimdocSpider(scrapy.Spider):
 
     def _parse_sitemap(self, response):
         """Parse XML sitemap and extract chapter structure from URLs"""
+        self.logger.info(f"=== PARSING SITEMAP: {response.url} ===")
+        self.logger.info(f"Response status: {response.status}")
+        self.logger.info(f"Response size: {len(response.body)} bytes")
+        
         try:
             root = ElementTree.fromstring(response.body)
             # Handle XML namespace
             namespace = {"": "http://www.sitemaps.org/schemas/sitemap/0.9"}
             
+            all_url_elements = root.findall(".//url", namespace)
+            self.logger.info(f"Found {len(all_url_elements)} total URL elements in sitemap")
+            
             urls_found = 0
+            urls_skipped_scope = 0
+            urls_skipped_not_doc = 0
+            urls_skipped_duplicate = 0
             chapter_urls = {}  # Group URLs by chapter
             
-            for url_element in root.findall(".//url", namespace):
+            for i, url_element in enumerate(all_url_elements):
                 loc_element = url_element.find("loc", namespace)
                 if loc_element is not None:
                     url = loc_element.text
                     
-                    # Check if URL is in scope and looks like documentation
-                    if (self._in_scope(url) and 
-                        self._is_documentation_url(url) and 
-                        url not in self.discovered_urls):
-                        
-                        # Extract chapter from URL structure
-                        chapter_info = self._extract_chapter_from_url(url)
-                        chapter_name = chapter_info['chapter']
-                        
-                        # Group URLs by chapter
-                        if chapter_name not in chapter_urls:
-                            chapter_urls[chapter_name] = []
-                        chapter_urls[chapter_name].append({
-                            'url': url,
-                            'order': chapter_info['order'],
-                            'title': chapter_info['title']
-                        })
-                        
-                        self.discovered_urls.add(url)
-                        urls_found += 1
+                    if i < 5:  # Log first 5 URLs for debugging
+                        self.logger.info(f"Processing URL #{i+1}: {url}")
+                    
+                    # Check if URL is in scope
+                    in_scope = self._in_scope(url)
+                    if not in_scope:
+                        urls_skipped_scope += 1
+                        if i < 5:
+                            self.logger.info(f"  -> SKIPPED: Not in scope")
+                        continue
+                    
+                    # Check if looks like documentation
+                    is_doc = self._is_documentation_url(url)
+                    if not is_doc:
+                        urls_skipped_not_doc += 1
+                        if i < 5:
+                            self.logger.info(f"  -> SKIPPED: Not documentation URL")
+                        continue
+                    
+                    # Check if already discovered
+                    if url in self.discovered_urls:
+                        urls_skipped_duplicate += 1
+                        if i < 5:
+                            self.logger.info(f"  -> SKIPPED: Duplicate URL")
+                        continue
+                    
+                    if i < 5:
+                        self.logger.info(f"  -> ACCEPTED: Will scrape this URL")
+                    
+                    # Extract chapter from URL structure
+                    chapter_info = self._extract_chapter_from_url(url)
+                    chapter_name = chapter_info['chapter']
+                    
+                    # Group URLs by chapter
+                    if chapter_name not in chapter_urls:
+                        chapter_urls[chapter_name] = []
+                    chapter_urls[chapter_name].append({
+                        'url': url,
+                        'order': chapter_info['order'],
+                        'title': chapter_info['title']
+                    })
+                    
+                    self.discovered_urls.add(url)
+                    urls_found += 1
             
             # Process URLs in chapter order
             for chapter_name, urls in chapter_urls.items():
@@ -210,12 +265,32 @@ class AimdocSpider(scrapy.Spider):
             # Store chapter information
             self.chapters = {name: len(urls) for name, urls in chapter_urls.items()}
             
-            self.logger.info(f"Found {urls_found} documentation URLs in {len(chapter_urls)} chapters")
-            for chapter, count in self.chapters.items():
-                self.logger.info(f"  - {chapter}: {count} pages")
+            # Log detailed statistics
+            self.logger.info(f"=== SITEMAP PROCESSING COMPLETE ===")
+            self.logger.info(f"Total URLs in sitemap: {len(all_url_elements)}")
+            self.logger.info(f"URLs skipped (not in scope): {urls_skipped_scope}")
+            self.logger.info(f"URLs skipped (not documentation): {urls_skipped_not_doc}")
+            self.logger.info(f"URLs skipped (duplicates): {urls_skipped_duplicate}")
+            self.logger.info(f"URLs ACCEPTED for scraping: {urls_found}")
+            self.logger.info(f"Chapters created: {len(chapter_urls)}")
             
-        except ElementTree.ParseError:
-            self.logger.warning(f"Could not parse sitemap: {response.url}")
+            if urls_found > 0:
+                for chapter, urls in chapter_urls.items():
+                    self.logger.info(f"  Chapter '{chapter}': {len(urls)} pages")
+                    if len(urls) <= 3:  # Show URLs for small chapters
+                        for url_info in urls:
+                            self.logger.info(f"    -> {url_info['url']}")
+            else:
+                self.logger.warning("NO URLS FOUND TO SCRAPE!")
+                self.logger.warning(f"Base URL pattern: {self.base_url}")
+                self.logger.warning("Check _in_scope() and _is_documentation_url() logic")
+            
+        except ElementTree.ParseError as e:
+            self.logger.error(f"Could not parse sitemap XML: {response.url}")
+            self.logger.error(f"XML Parse Error: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error parsing sitemap: {response.url}")
+            self.logger.error(f"Error: {e}")
     
     def _extract_chapter_from_url(self, url):
         """Extract chapter information from URL structure - generic implementation"""
@@ -341,20 +416,47 @@ class AimdocSpider(scrapy.Spider):
         ]
         
         url_lower = url.lower()
-        return any(pattern in url_lower for pattern in doc_patterns)
+        has_doc_pattern = any(pattern in url_lower for pattern in doc_patterns)
+        
+        # Add detailed logging for debugging - but only for first few URLs
+        if not hasattr(self, '_doc_url_log_count'):
+            self._doc_url_log_count = 0
+        
+        if self._doc_url_log_count < 10:  # Log first 10 URL checks
+            self.logger.info(f"_is_documentation_url({url}) -> {has_doc_pattern}")
+            if not has_doc_pattern:
+                self.logger.info(f"  No match for patterns: {doc_patterns}")
+            self._doc_url_log_count += 1
+        
+        return has_doc_pattern
 
     def _in_scope(self, url):
         """Check if URL is within the defined scope (auto-generated from base URL)"""
+        # Add detailed logging for debugging - but only for first few URLs
+        if not hasattr(self, '_scope_log_count'):
+            self._scope_log_count = 0
+        
         # Simple check: URL must start with base URL
         if not url.startswith(self.base_url):
+            if self._scope_log_count < 10:
+                self.logger.info(f"_in_scope({url}) -> False (doesn't start with base URL: {self.base_url})")
+                self._scope_log_count += 1
             return False
             
         # If the base URL itself contains documentation patterns, accept all URLs under it
-        if self._is_documentation_url(self.base_url):
+        base_is_doc = self._is_documentation_url(self.base_url)
+        if base_is_doc:
+            if self._scope_log_count < 10:
+                self.logger.info(f"_in_scope({url}) -> True (base URL is doc URL)")
+                self._scope_log_count += 1
             return True
             
         # Otherwise, check if the specific URL is a documentation URL
-        return self._is_documentation_url(url)
+        url_is_doc = self._is_documentation_url(url)
+        if self._scope_log_count < 10:
+            self.logger.info(f"_in_scope({url}) -> {url_is_doc} (URL doc check)")
+            self._scope_log_count += 1
+        return url_is_doc
 
     def _now(self):
         """Get current timestamp in ISO format"""

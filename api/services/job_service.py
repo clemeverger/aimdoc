@@ -3,11 +3,13 @@ import json
 import os
 import tempfile
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 import subprocess
 import shutil
+from fastapi import WebSocket
 
 from ..models import JobStatus, ScrapeRequest, JobStatusResponse, JobResults
 
@@ -20,8 +22,12 @@ class JobService:
         self.jobs: Dict[str, Dict[str, Any]] = {}
         self.job_processes: Dict[str, subprocess.Popen] = {}
         
+        # WebSocket connections for real-time updates
+        self.websocket_connections: Dict[str, Set[WebSocket]] = {}
+        
         # Ensure jobs directory exists
-        self.jobs_dir = Path("jobs")
+        project_root = Path(__file__).parent.parent.parent  # Go up to project root
+        self.jobs_dir = project_root / "jobs"
         self.jobs_dir.mkdir(exist_ok=True)
     
     def create_job(self, request: ScrapeRequest) -> str:
@@ -61,18 +67,24 @@ class JobService:
     
     async def start_job(self, job_id: str) -> bool:
         """Start a scrape job"""
+        print(f"[{datetime.now()}] START_JOB: Starting job {job_id}")
+        
         if job_id not in self.jobs:
+            print(f"[{datetime.now()}] START_JOB: Job {job_id} not found")
             return False
         
         job = self.jobs[job_id]
         if job["status"] != JobStatus.PENDING:
+            print(f"[{datetime.now()}] START_JOB: Job {job_id} status is {job['status']}, not PENDING")
             return False
         
         # Update job status
         job["status"] = JobStatus.RUNNING
         job["started_at"] = datetime.now()
+        print(f"[{datetime.now()}] START_JOB: Job {job_id} status updated to RUNNING")
         
         # Start scrapy process asynchronously
+        print(f"[{datetime.now()}] START_JOB: Creating asyncio task for _run_scrapy")
         asyncio.create_task(self._run_scrapy(job_id))
         
         return True
@@ -89,11 +101,23 @@ class JobService:
     
     async def _run_scrapy(self, job_id: str):
         """Run scrapy in a subprocess"""
+        print(f"[{datetime.now()}] RUN_SCRAPY: Starting _run_scrapy for job {job_id}")
         job = self.jobs[job_id]
         
         try:
+            # Send initial update
+            print(f"[{datetime.now()}] RUN_SCRAPY: Broadcasting initial update")
+            await self.broadcast_job_update(job_id, {
+                "type": "status_update",
+                "status": "running",
+                "message": "Starting scrape process...",
+                "progress": job.get("progress", {})
+            })
+            
             # Change to job directory
             original_cwd = os.getcwd()
+            print(f"[{datetime.now()}] RUN_SCRAPY: Original CWD: {original_cwd}")
+            print(f"[{datetime.now()}] RUN_SCRAPY: Job dir: {job['job_dir']}")
             os.chdir(job["job_dir"])
             
             # Run scrapy command
@@ -102,19 +126,27 @@ class JobService:
                 "-a", f"manifest={job['manifest_path']}",
                 "-o", f"{job['build_dir']}/items.json"
             ]
+            print(f"[{datetime.now()}] RUN_SCRAPY: Command to run: {' '.join(cmd)}")
+            print(f"[{datetime.now()}] RUN_SCRAPY: Build dir: {job['build_dir']}")
+            print(f"[{datetime.now()}] RUN_SCRAPY: Manifest path: {job['manifest_path']}")
             
+            print(f"[{datetime.now()}] RUN_SCRAPY: Creating subprocess...")
+            # Run Scrapy with logs visible by not capturing stdout/stderr
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=None,  # Let stdout go to console
+                stderr=None,  # Let stderr go to console  
                 text=True,
                 cwd=original_cwd  # Run from original project root
             )
             
+            print(f"[{datetime.now()}] RUN_SCRAPY: Process created with PID: {process.pid}")
             self.job_processes[job_id] = process
             
             # Monitor process asynchronously instead of blocking
+            print(f"[{datetime.now()}] RUN_SCRAPY: Starting process monitoring...")
             stdout, stderr, return_code = await self._monitor_process(job_id, process)
+            print(f"[{datetime.now()}] RUN_SCRAPY: Process finished with return code: {return_code}")
             
             # Update job status based on scraped content first, then return code
             build_path = Path(job["build_dir"])
@@ -152,21 +184,51 @@ class JobService:
                 }
                 job["progress"]["pages_scraped"] = scraped_items
                 job["progress"]["files_created"] = file_count
+                
+                # Send completion update
+                await self.broadcast_job_update(job_id, {
+                    "type": "status_update",
+                    "status": "completed",
+                    "message": f"Scraping completed! Created {file_count} files from {scraped_items} pages",
+                    "progress": job["progress"],
+                    "result_summary": job["result_summary"]
+                })
             elif return_code == 0:
                 # Scrapy completed successfully but found no pages
                 job["status"] = JobStatus.FAILED
                 job["error_message"] = f"No pages were scraped (Scrapy completed but found 0 items)"
                 job["completed_at"] = datetime.now()
+                
+                await self.broadcast_job_update(job_id, {
+                    "type": "status_update",
+                    "status": "failed",
+                    "message": "No pages were scraped",
+                    "error": job["error_message"]
+                })
             else:
                 # Scrapy failed
                 job["status"] = JobStatus.FAILED
                 job["error_message"] = f"Scrapy failed with code {return_code}: {stderr}"
                 job["completed_at"] = datetime.now()
+                
+                await self.broadcast_job_update(job_id, {
+                    "type": "status_update",
+                    "status": "failed",
+                    "message": f"Scraping failed (code {return_code})",
+                    "error": job["error_message"]
+                })
         
         except Exception as e:
             job["status"] = JobStatus.FAILED
             job["error_message"] = str(e)
             job["completed_at"] = datetime.now()
+            
+            await self.broadcast_job_update(job_id, {
+                "type": "status_update",
+                "status": "failed",
+                "message": "An error occurred during scraping",
+                "error": str(e)
+            })
         
         finally:
             # Clean up process reference
@@ -178,28 +240,36 @@ class JobService:
     async def _monitor_process(self, job_id: str, process: subprocess.Popen, timeout: int = 600):
         """Monitor process asynchronously without blocking the API"""
         start_time = datetime.now()
+        print(f"[{datetime.now()}] MONITOR: Starting monitoring for job {job_id}, PID {process.pid}")
         
+        loop_count = 0
         while True:
+            loop_count += 1
+            if loop_count % 10 == 0:  # Log every 10 seconds
+                elapsed = (datetime.now() - start_time).total_seconds()
+                print(f"[{datetime.now()}] MONITOR: Job {job_id} still running, elapsed: {elapsed:.1f}s")
+            
             # Check if process is still running
             return_code = process.poll()
             
             if return_code is not None:
-                # Process completed, collect output
-                stdout, stderr = process.communicate()
-                return stdout, stderr, return_code
+                # Process completed
+                print(f"[{datetime.now()}] MONITOR: Process completed with return code {return_code}")
+                return "", "", return_code
             
             # Check for timeout (default 10 minutes)
             if (datetime.now() - start_time).total_seconds() > timeout:
-                print(f"Job {job_id} timed out after {timeout} seconds, terminating")
+                print(f"[{datetime.now()}] MONITOR: Job {job_id} timed out after {timeout} seconds, terminating")
                 process.terminate()
                 try:
                     # Give process 5 seconds to terminate gracefully
-                    stdout, stderr = process.communicate(timeout=5)
+                    process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     # Force kill if it doesn't terminate
+                    print(f"[{datetime.now()}] MONITOR: Force killing process {process.pid}")
                     process.kill()
-                    stdout, stderr = process.communicate()
-                return stdout, stderr, -1
+                    process.wait()
+                return "", "", -1
             
             # Sleep for 1 second before checking again (non-blocking)
             await asyncio.sleep(1)
@@ -281,6 +351,57 @@ class JobService:
         del self.jobs[job_id]
         
         return True
+    
+    async def add_websocket_connection(self, job_id: str, websocket: WebSocket):
+        """Add a WebSocket connection for a job"""
+        if job_id not in self.websocket_connections:
+            self.websocket_connections[job_id] = set()
+        self.websocket_connections[job_id].add(websocket)
+    
+    async def remove_websocket_connection(self, job_id: str, websocket: WebSocket):
+        """Remove a WebSocket connection for a job"""
+        if job_id in self.websocket_connections:
+            self.websocket_connections[job_id].discard(websocket)
+            if not self.websocket_connections[job_id]:
+                del self.websocket_connections[job_id]
+    
+    async def broadcast_job_update(self, job_id: str, update: Dict[str, Any]):
+        """Broadcast job update to all connected WebSocket clients"""
+        if job_id in self.websocket_connections:
+            disconnected = set()
+            for websocket in self.websocket_connections[job_id].copy():
+                try:
+                    await websocket.send_json(update)
+                except Exception:
+                    disconnected.add(websocket)
+            
+            # Remove disconnected websockets
+            for websocket in disconnected:
+                self.websocket_connections[job_id].discard(websocket)
+    
+    def create_zip_download(self, job_id: str) -> Optional[str]:
+        """Create a ZIP file of job results for download"""
+        if job_id not in self.jobs:
+            return None
+        
+        job = self.jobs[job_id]
+        if job["status"] != JobStatus.COMPLETED:
+            return None
+        
+        build_path = Path(job["build_dir"])
+        if not build_path.exists():
+            return None
+        
+        # Create ZIP file
+        zip_path = build_path.parent / f"{job['request']['name']}-results.zip"
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in build_path.glob("**/*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(build_path)
+                    zipf.write(file_path, arcname)
+        
+        return str(zip_path)
 
 
 # Global job service instance

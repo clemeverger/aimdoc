@@ -4,7 +4,7 @@ import * as path from 'path'
 import { Config } from './types'
 
 const DEFAULT_CONFIG: Config = {
-  api_url: 'https://aimdoc.onrender.com',
+  api_url: process.env.AIMDOC_API_URL || 'http://0.0.0.0:8000',
   timeout: 30000,
 }
 

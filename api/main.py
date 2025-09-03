@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import jobs
 
@@ -39,6 +39,8 @@ async def root():
             "GET /api/v1/jobs/{job_id}": "Get job status",
             "GET /api/v1/jobs/{job_id}/results": "Get job results",
             "GET /api/v1/jobs/{job_id}/download/{file_path}": "Download job file",
+            "GET /api/v1/jobs/{job_id}/download-zip": "Download complete job results as ZIP",
+            "WS /api/v1/jobs/{job_id}/ws": "WebSocket for real-time job updates",
             "DELETE /api/v1/jobs/{job_id}": "Delete job",
             "POST /api/v1/jobs/{job_id}/cancel": "Cancel running job"
         }

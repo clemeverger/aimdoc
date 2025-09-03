@@ -58,3 +58,20 @@ export interface Config {
 export interface CLIError extends Error {
   statusCode?: number;
 }
+
+export interface WebSocketJobUpdate {
+  type: 'status_update' | 'pong';
+  status?: JobStatus;
+  message?: string;
+  progress?: {
+    pages_found?: number;
+    pages_scraped?: number;
+    files_created?: number;
+  };
+  result_summary?: {
+    files_created?: number;
+    build_size?: number;
+    build_path?: string;
+  };
+  error?: string;
+}

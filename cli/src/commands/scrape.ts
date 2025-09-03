@@ -358,6 +358,15 @@ async function downloadResults(api: AimdocAPI, jobId: string, projectName: strin
 
     // Generate README index
     await generateReadmeIndex(finalDir)
+
+    // Clean up job from server after successful download
+    try {
+      await api.deleteJob(jobId)
+      console.log('✅ Job cleaned up from server')
+    } catch (error) {
+      // Don't fail the whole process if cleanup fails, just warn
+      console.warn('⚠️  Warning: Could not clean up job from server:', (error as Error).message)
+    }
   } catch (error) {
     downloadSpinner.fail('Failed to download results')
     printError('Download error', error as Error)

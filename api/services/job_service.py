@@ -65,8 +65,6 @@ class JobService:
         """Start a scrape job"""
         print(f"[{datetime.now()}] START_JOB: Starting job {job_id}")
         
-        # Clean up old jobs before starting new one
-        self.cleanup_old_jobs()
         
         if job_id not in self.jobs:
             print(f"[{datetime.now()}] START_JOB: Job {job_id} not found")
@@ -88,29 +86,6 @@ class JobService:
         
         return True
     
-    def cleanup_finished_processes(self):
-        """Clean up finished processes to prevent zombie processes"""
-        finished_jobs = []
-        for job_id, process in self.job_processes.items():
-            if process.poll() is not None:
-                finished_jobs.append(job_id)
-        
-        for job_id in finished_jobs:
-            del self.job_processes[job_id]
-    
-    def cleanup_old_jobs(self):
-        """Clean up jobs older than 24 hours to prevent memory leaks"""
-        cutoff_time = datetime.now() - timedelta(hours=24)
-        old_jobs = []
-        
-        for job_id, job_data in self.jobs.items():
-            job_created = job_data.get("created_at")
-            if job_created and job_created < cutoff_time:
-                old_jobs.append(job_id)
-        
-        for job_id in old_jobs:
-            print(f"[{datetime.now()}] CLEANUP: Removing old job {job_id}")
-            self.delete_job(job_id)
     
     async def _run_scrapy(self, job_id: str):
         """Run scrapy in a subprocess"""

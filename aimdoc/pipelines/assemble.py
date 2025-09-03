@@ -1,6 +1,4 @@
-import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 import re
@@ -12,8 +10,6 @@ class AssemblePipeline:
     """
 
     def __init__(self):
-        # Store only minimal metadata instead of full pages
-        self.page_metadata = []
         self.output_dir = None
         self.files_created_count = 0
         
@@ -43,17 +39,10 @@ class AssemblePipeline:
         spider.logger.info(f"Assembling documentation in: {self.output_dir}")
 
     def process_item(self, item, spider):
-        """Process pages immediately instead of accumulating in memory."""
+        """Process pages immediately without storing metadata."""
         if item.get('md'):
             # Process the page immediately to save memory
             self._process_page_immediately(item)
-            
-            # Store only minimal metadata for README generation
-            self.page_metadata.append({
-                'url': item['url'],
-                'title': item.get('title', 'Untitled'),
-                'order': item.get('order', 999)
-            })
         return item
     
     def _process_page_immediately(self, page):
@@ -80,21 +69,10 @@ class AssemblePipeline:
 
     def close_spider(self, spider):
         """
-        Finalize the assembly process: generate README and sources.json.
+        Finalize the assembly process.
         Individual markdown files are already created during processing.
         """
-        if not self.page_metadata:
-            spider.logger.warning("No pages with markdown content to assemble.")
-            return
-
-        # Sort metadata by order and URL 
-        self.page_metadata.sort(key=lambda p: (p.get('order', 999), p['url']))
-
-        # Generate final files
-        self._generate_readme()
-        self._generate_sources_json()
-
-        spider.logger.info(f"Assembly complete. Generated {len(self.page_metadata)} files.")
+        spider.logger.info(f"Assembly complete. Generated {self.files_created_count} files.")
 
 
 
@@ -127,54 +105,6 @@ class AssemblePipeline:
             return path.with_suffix('.md')
 
         return path
-        
-    def _generate_readme(self):
-        """Generate a simple README.md file listing all created markdown files."""
-        readme_path = self.output_dir / 'README.md'
-        content = f"# {self.manifest.get('name', 'Documentation')}\n\n"
-        content += "## All Pages\n\n"
-
-        for page in self.page_metadata:
-            file_path = self._get_path_from_url(page['url'])
-            if file_path:
-                title = page.get('title', str(file_path))
-                content += f"- [{title}]({file_path})\n"
-
-        try:
-            with open(readme_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            self.spider.logger.info(f"Generated README.md at {readme_path}")
-        except OSError as e:
-            self.spider.logger.error(f"Failed to write README.md: {e}")
-
-    def _generate_sources_json(self):
-        """
-        Generate a SOURCES.json file with metadata about the scrape.
-        """
-        sources = [
-            {
-                'url': page['url'],
-                'title': page.get('title', ''),
-                'order': page.get('order', 999),
-                'fetched_at': '',  # No longer storing full page data
-            }
-            for page in self.page_metadata
-        ]
-
-        sources_path = self.output_dir / 'sources.json'
-        metadata = {
-            'generated_at': datetime.now(timezone.utc).isoformat(),
-            'total_pages': len(sources),
-            'manifest_name': self.manifest.get('name', ''),
-            'sources': sources,
-        }
-
-        try:
-            with open(sources_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
-            self.spider.logger.info(f"Generated sources.json at {sources_path}")
-        except OSError as e:
-            self.spider.logger.error(f"Failed to write sources.json: {e}")
 
     def _escape_yaml(self, text: str) -> str:
         """Basic escaping for YAML strings."""

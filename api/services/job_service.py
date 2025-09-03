@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Set
 import subprocess
@@ -65,6 +65,9 @@ class JobService:
         """Start a scrape job"""
         print(f"[{datetime.now()}] START_JOB: Starting job {job_id}")
         
+        # Clean up old jobs before starting new one
+        self.cleanup_old_jobs()
+        
         if job_id not in self.jobs:
             print(f"[{datetime.now()}] START_JOB: Job {job_id} not found")
             return False
@@ -95,6 +98,20 @@ class JobService:
         for job_id in finished_jobs:
             del self.job_processes[job_id]
     
+    def cleanup_old_jobs(self):
+        """Clean up jobs older than 24 hours to prevent memory leaks"""
+        cutoff_time = datetime.now() - timedelta(hours=24)
+        old_jobs = []
+        
+        for job_id, job_data in self.jobs.items():
+            job_created = job_data.get("created_at")
+            if job_created and job_created < cutoff_time:
+                old_jobs.append(job_id)
+        
+        for job_id in old_jobs:
+            print(f"[{datetime.now()}] CLEANUP: Removing old job {job_id}")
+            self.delete_job(job_id)
+    
     async def _run_scrapy(self, job_id: str):
         """Run scrapy in a subprocess"""
         print(f"[{datetime.now()}] RUN_SCRAPY: Starting _run_scrapy for job {job_id}")
@@ -124,7 +141,6 @@ class JobService:
             cmd = [
                 "scrapy", "crawl", "aimdoc", 
                 "-a", f"manifest={job['manifest_path']}",
-                "-o", f"{job_dir}/items.json",
                 "-L", "WARNING"  # Only show WARNING and ERROR logs
             ]
             print(f"[{datetime.now()}] RUN_SCRAPY: Command to run: {' '.join(cmd)}")
@@ -149,16 +165,15 @@ class JobService:
             stdout, stderr, return_code = await self._monitor_process(job_id, process)
             print(f"[{datetime.now()}] RUN_SCRAPY: Process finished with return code: {return_code}")
             
-            # Update job status based on scraped content first, then return code
+            # Update job status based on scraped content from summary file
             job_path = Path(job["job_dir"])
-            items_file = job_path / "items.json"
             summary_file = job_path / "scraping_summary.json"
             
             scraped_items = 0
             failed_pages = 0
             discovered_pages = 0
             
-            # Try to get detailed info from summary first
+            # Get info from summary file (main source now that items.json is removed)
             if summary_file.exists():
                 try:
                     with open(summary_file, 'r', encoding='utf-8') as f:
@@ -169,17 +184,8 @@ class JobService:
                         print(f"[{datetime.now()}] RUN_SCRAPY: Summary - Discovered: {discovered_pages}, Scraped: {scraped_items}, Failed: {failed_pages}")
                 except (json.JSONDecodeError, FileNotFoundError) as e:
                     print(f"[{datetime.now()}] RUN_SCRAPY: Failed to read summary: {e}")
-            
-            # Fallback to items.json if summary not available
-            if scraped_items == 0 and items_file.exists():
-                try:
-                    with open(items_file, 'r', encoding='utf-8') as f:
-                        items = json.load(f)
-                        scraped_items = len(items) if isinstance(items, list) else 0
-                        print(f"[{datetime.now()}] RUN_SCRAPY: Fallback count from items.json: {scraped_items}")
-                except (json.JSONDecodeError, FileNotFoundError) as e:
-                    print(f"[{datetime.now()}] RUN_SCRAPY: Failed to read items.json: {e}")
-                    scraped_items = 0
+            else:
+                print(f"[{datetime.now()}] RUN_SCRAPY: No scraping summary found")
             
             if scraped_items > 0:
                 # Success: pages were scraped regardless of return code
@@ -290,7 +296,6 @@ class JobService:
         print(f"[{datetime.now()}] MONITOR: Starting monitoring for job {job_id}, PID {process.pid}")
         
         job = self.jobs[job_id]
-        items_file = os.path.join(job["job_dir"], "items.json")
         progress_file = os.path.join(job["job_dir"], "progress.json")
         last_item_count = 0
         last_update_time = start_time
@@ -310,32 +315,10 @@ class JobService:
                 print(f"[{datetime.now()}] MONITOR: Process completed with return code {return_code}")
                 return "", "", return_code
             
-            # Check progress every 2 seconds and send updates
-            if loop_count % 2 == 0:
+            # Check progress every 10 seconds instead of 5 to reduce I/O and memory usage
+            if loop_count % 10 == 0:
                 try:
                     current_item_count = 0
-                    if os.path.exists(items_file):
-                        # Count actual items in JSON array
-                        try:
-                            with open(items_file, 'r', encoding='utf-8') as f:
-                                content = f.read().strip()
-                                if content:
-                                    items = json.loads(content)
-                                    current_item_count = len(items) if isinstance(items, list) else 0
-                                    if loop_count % 10 == 0:  # Log every 10 seconds
-                                        print(f"[{datetime.now()}] MONITOR: items.json contains {current_item_count} items")
-                        except (json.JSONDecodeError, Exception) as e:
-                            # Fallback: count non-empty lines (for line-by-line JSON)
-                            try:
-                                with open(items_file, 'r', encoding='utf-8') as f:
-                                    for line in f:
-                                        line = line.strip()
-                                        if line and line not in ['[', ']', ',']:  # Skip JSON array markers
-                                            current_item_count += 1
-                                if loop_count % 10 == 0:  # Log every 10 seconds
-                                    print(f"[{datetime.now()}] MONITOR: Fallback count: {current_item_count} items")
-                            except Exception:
-                                current_item_count = 0
                     
                     # Check for progress file from spider and detect phase transitions
                     # Only log progress file checks occasionally to reduce noise
@@ -467,9 +450,9 @@ class JobService:
                 pages_scraped = job["progress"].get("pages_scraped", last_item_count)
                 print(f"[{datetime.now()}] MONITOR: Job {job_id} still running, elapsed: {elapsed:.1f}s, {pages_scraped} pages scraped")
             
-            # Check for timeout (default 30 minutes)
+            # Check for timeout (30 minutes instead of 60 to prevent Render shutdown)
             if (current_time - start_time).total_seconds() > timeout:
-                print(f"[{datetime.now()}] MONITOR: Job {job_id} timed out after {timeout} seconds, terminating")
+                print(f"[{datetime.now()}] MONITOR: Job {job_id} timed out after {timeout} seconds (30 min), terminating")
                 process.terminate()
                 try:
                     # Give process 5 seconds to terminate gracefully
@@ -481,8 +464,8 @@ class JobService:
                     process.wait()
                 return "", "", -1
             
-            # Sleep for 1 second before checking again (non-blocking)
-            await asyncio.sleep(1)
+            # Sleep for 10 seconds before checking again (non-blocking) - reduced frequency for better memory
+            await asyncio.sleep(10)
     
     def get_job_status(self, job_id: str) -> Optional[JobStatusResponse]:
         """Get job status"""

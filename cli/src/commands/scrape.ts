@@ -165,7 +165,7 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
       async (update: WebSocketJobUpdate) => {
         if (update.type === 'status_update') {
           // Handle initial connection message (only once)
-          if (update.message && update.message.includes('Monitoring job') && !connectionMessageHandled) {
+          if (!connectionMessageHandled) {
             connectionMessageHandled = true
             connectionSpinner.succeed('Connected to job')
           }

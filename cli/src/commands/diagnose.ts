@@ -58,6 +58,24 @@ export function createDiagnoseCommand(): Command {
               console.log(`\n=== Detailed Diagnostics ===`)
               console.log(`Spider close reason: ${summaryData.spider_close_reason || 'Unknown'}`)
               
+              // Show discovery errors first as they're often the root cause
+              if (summaryData.discovery_errors && summaryData.discovery_errors.length > 0) {
+                console.log(`\n❌ Discovery Errors (${summaryData.discovery_errors.length}):`)
+                summaryData.discovery_errors.forEach((error: any, index: number) => {
+                  console.log(`  ${index + 1}. ${chalk.red(error.url)}`)
+                  console.log(`     Error: ${error.error_type}: ${error.error}`)
+                })
+                
+                // Add helpful explanation for common sitemap issues
+                const sitemapErrors = summaryData.discovery_errors.filter((e: any) => 
+                  e.url.includes('sitemap') || e.url.includes('robots.txt'))
+                if (sitemapErrors.length > 0) {
+                  console.log(`\n💡 ${chalk.yellow('Tip:')} This website appears to have no sitemap or an inaccessible sitemap.`)
+                  console.log(`   Consider trying a different website that has a sitemap.xml file.`)
+                  console.log(`   You can check if a site has a sitemap by visiting: ${chalk.underline('[website-url]/sitemap.xml')}`)
+                }
+              }
+              
               if (summaryData.failed_pages && summaryData.failed_pages.length > 0) {
                 console.log(`\n❌ Failed Pages (${summaryData.failed_pages.length}):`)
                 summaryData.failed_pages.forEach((failed: any, index: number) => {
@@ -67,7 +85,7 @@ export function createDiagnoseCommand(): Command {
                     console.log(`     Status: ${failed.status}`)
                   }
                 })
-              } else {
+              } else if (!summaryData.discovery_errors || summaryData.discovery_errors.length === 0) {
                 console.log(`\n✅ No failed pages`)
               }
 

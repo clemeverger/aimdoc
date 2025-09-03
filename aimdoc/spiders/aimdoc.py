@@ -139,6 +139,18 @@ class AimdocSpider(scrapy.Spider):
         self.logger.warning(f"Failed URL: {failure.request.url}")
         self.logger.warning(f"Error: {failure.value}")
         self.logger.warning(f"Error type: {type(failure.value)}")
+        
+        # Store discovery failure information for better error reporting
+        if not hasattr(self, 'discovery_errors'):
+            self.discovery_errors = []
+        
+        error_info = {
+            'url': failure.request.url,
+            'error': str(failure.value),
+            'error_type': type(failure.value).__name__
+        }
+        self.discovery_errors.append(error_info)
+        
         return []
 
     def parse_page(self, response):
@@ -503,6 +515,13 @@ class AimdocSpider(scrapy.Spider):
         self.logger.info(f"Pages successfully scraped: {self.pages_scraped_count}")
         self.logger.info(f"Pages failed: {len(self.failed_pages)}")
         
+        # Log discovery errors if any
+        discovery_errors = getattr(self, 'discovery_errors', [])
+        if discovery_errors:
+            self.logger.warning(f"❌ DISCOVERY ERRORS ({len(discovery_errors)}):")
+            for i, error in enumerate(discovery_errors, 1):
+                self.logger.warning(f"  {i}. {error['url']} - {error['error_type']}: {error['error']}")
+        
         if self.failed_pages:
             self.logger.warning(f"❌ FAILED PAGES DETAILS:")
             for i, failed in enumerate(self.failed_pages, 1):
@@ -526,12 +545,14 @@ class AimdocSpider(scrapy.Spider):
             manifest_dir = os.path.dirname(self.manifest_path) if hasattr(self, 'manifest_path') else os.getcwd()
             summary_file = os.path.join(manifest_dir, "scraping_summary.json")
             
+            discovery_errors = getattr(self, 'discovery_errors', [])
             summary_data = {
                 "spider_close_reason": reason,
                 "pages_discovered": len(self.discovered_urls),
                 "pages_scraped": self.pages_scraped_count,
                 "pages_failed": len(self.failed_pages),
                 "failed_pages": self.failed_pages,
+                "discovery_errors": discovery_errors,
                 "discovered_urls": list(self.discovered_urls),
                 "chapters": self.chapters
             }

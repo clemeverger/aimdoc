@@ -240,8 +240,11 @@ class JobService:
                 })
             elif return_code == 0:
                 # Scrapy completed successfully but found no pages
+                # Try to get more detailed error information from scraping summary
+                detailed_error = await self._get_detailed_error_message(job_dir)
+                
                 job["status"] = JobStatus.FAILED
-                job["error_message"] = f"No pages were scraped (Scrapy completed but found 0 items)"
+                job["error_message"] = detailed_error
                 job["completed_at"] = datetime.now()
                 
                 await self.broadcast_job_update(job_id, {
@@ -657,6 +660,47 @@ class JobService:
                     zipf.write(file_path, arcname)
         
         return str(zip_path)
+    
+    async def _get_detailed_error_message(self, job_dir: Path) -> str:
+        """Get detailed error message from scraping summary if available"""
+        try:
+            summary_file = job_dir / "scraping_summary.json"
+            if summary_file.exists():
+                with open(summary_file, 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+                
+                discovery_errors = summary.get('discovery_errors', [])
+                pages_discovered = summary.get('pages_discovered', 0)
+                pages_failed = summary.get('pages_failed', 0)
+                
+                if discovery_errors:
+                    # Site has no sitemap or sitemap discovery failed
+                    sitemap_errors = [e for e in discovery_errors if 'sitemap' in e.get('url', '').lower()]
+                    robots_errors = [e for e in discovery_errors if 'robots.txt' in e.get('url', '').lower()]
+                    
+                    if sitemap_errors or robots_errors:
+                        error_msg = "No sitemap found for this website. "
+                        if robots_errors:
+                            error_msg += "robots.txt was not accessible, "
+                        if sitemap_errors:
+                            error_msg += f"tried {len(sitemap_errors)} sitemap URL(s) but none were found. "
+                        
+                        error_msg += "This website might not have a sitemap, or it might be located at a non-standard path. "
+                        error_msg += "Try using a website that has a sitemap.xml file, or contact the site owner to add one."
+                        return error_msg
+                
+                if pages_discovered == 0:
+                    return "No pages were discovered. The website might not have a sitemap or the sitemap might be empty."
+                elif pages_failed > 0:
+                    return f"Discovered {pages_discovered} pages but all {pages_failed} failed to scrape. Check the website's accessibility and structure."
+                else:
+                    return "No pages were scraped despite successful discovery. This might be due to content filtering or parsing issues."
+            
+        except Exception as e:
+            print(f"Error reading scraping summary: {e}")
+        
+        # Fallback generic message
+        return "No pages were scraped (Scrapy completed but found 0 items). The website might not have a sitemap or the content might not be accessible."
 
 
 # Global job service instance

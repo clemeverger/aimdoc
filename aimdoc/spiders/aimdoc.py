@@ -64,8 +64,8 @@ class AimdocSpider(scrapy.Spider):
             f"{self.base_url}/sitemap_index.xml"
         ]
     
-    def start_requests(self):
-        """Generate initial requests for automatic discovery"""
+    async def start(self):
+        """Generate initial requests for automatic discovery (async version)"""
         for url in self.seed_urls:
             if url.endswith('robots.txt'):
                 yield Request(
@@ -345,11 +345,15 @@ class AimdocSpider(scrapy.Spider):
 
     def _in_scope(self, url):
         """Check if URL is within the defined scope (auto-generated from base URL)"""
-        # Simple check: URL must start with base URL and contain documentation paths
+        # Simple check: URL must start with base URL
         if not url.startswith(self.base_url):
             return False
             
-        # Must be a documentation URL
+        # If the base URL itself contains documentation patterns, accept all URLs under it
+        if self._is_documentation_url(self.base_url):
+            return True
+            
+        # Otherwise, check if the specific URL is a documentation URL
         return self._is_documentation_url(url)
 
     def _now(self):

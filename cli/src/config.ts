@@ -4,7 +4,7 @@ import * as os from 'os';
 import { Config } from './types';
 
 const DEFAULT_CONFIG: Config = {
-  api_url: 'http://localhost:8000',
+  api_url: 'https://aimdoc.onrender.com',
   timeout: 30000
 };
 

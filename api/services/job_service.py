@@ -90,7 +90,7 @@ class JobService:
             cmd = [
                 "scrapy", "crawl", "aimdoc", 
                 "-a", f"manifest={job['manifest_path']}",
-                "-s", f"FEEDS={{'{job['build_dir']}/items.json':{{}}}}",
+                "-o", f"{job['build_dir']}/items.json"
             ]
             
             process = subprocess.Popen(
@@ -106,25 +106,49 @@ class JobService:
             # Wait for completion
             stdout, stderr = process.communicate()
             
-            # Update job status based on return code
-            if process.returncode == 0:
+            # Update job status based on scraped content first, then return code
+            build_path = Path(job["build_dir"])
+            items_file = build_path / "items.json"
+            
+            scraped_items = 0
+            if items_file.exists():
+                try:
+                    import json
+                    with open(items_file, 'r', encoding='utf-8') as f:
+                        items = json.load(f)
+                        scraped_items = len(items) if isinstance(items, list) else 0
+                except (json.JSONDecodeError, FileNotFoundError):
+                    scraped_items = 0
+            
+            if scraped_items > 0:
+                # Success: pages were scraped regardless of return code
                 job["status"] = JobStatus.COMPLETED
                 job["completed_at"] = datetime.now()
                 
-                # Check if files were created
-                build_path = Path(job["build_dir"])
+                # Count all files created
                 if build_path.exists():
                     files = list(build_path.glob("**/*"))
-                    job["result_summary"] = {
-                        "files_created": len([f for f in files if f.is_file()]),
-                        "build_size": sum(f.stat().st_size for f in files if f.is_file()),
-                        "build_path": str(build_path)
-                    }
-                    job["progress"]["files_created"] = len([f for f in files if f.is_file()])
+                    file_count = len([f for f in files if f.is_file()])
+                    total_size = sum(f.stat().st_size for f in files if f.is_file())
                 else:
-                    job["error_message"] = "No output files were created"
-                    job["status"] = JobStatus.FAILED
+                    file_count = 0
+                    total_size = 0
+                
+                job["result_summary"] = {
+                    "files_created": file_count,
+                    "pages_scraped": scraped_items,
+                    "build_size": total_size,
+                    "build_path": str(build_path)
+                }
+                job["progress"]["pages_scraped"] = scraped_items
+                job["progress"]["files_created"] = file_count
+            elif process.returncode == 0:
+                # Scrapy completed successfully but found no pages
+                job["status"] = JobStatus.FAILED
+                job["error_message"] = f"No pages were scraped (Scrapy completed but found 0 items)"
+                job["completed_at"] = datetime.now()
             else:
+                # Scrapy failed
                 job["status"] = JobStatus.FAILED
                 job["error_message"] = f"Scrapy failed with code {process.returncode}: {stderr}"
                 job["completed_at"] = datetime.now()

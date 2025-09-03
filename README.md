@@ -45,16 +45,13 @@ aimdoc scrape https://react.dev
 ### Method 2: Direct API Usage
 
 ```bash
-# 1. Start the API
-python3 start_api.py
-
-# 2. Create a scrape job
-curl -X POST "http://localhost:8000/api/v1/scrape" \
+# Create a scrape job (API déjà déployée)
+curl -X POST "https://aimdoc.onrender.com/api/v1/scrape" \
   -H "Content-Type: application/json" \
   -d '{"name": "react-docs", "url": "https://react.dev"}'
 
-# 3. Check status and download results
-curl "http://localhost:8000/api/v1/jobs/{job_id}"
+# Check status and download results
+curl "https://aimdoc.onrender.com/api/v1/jobs/{job_id}"
 ```
 
 ### Method 3: Traditional Scrapy (Legacy)
@@ -83,9 +80,9 @@ aimdoc download abc123def
 
 Full-featured REST API for integration into other tools and services.
 
-- **Swagger docs**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-- **Health check**: http://localhost:8000/health
+- **Swagger docs**: https://aimdoc.onrender.com/docs
+- **ReDoc**: https://aimdoc.onrender.com/redoc
+- **Health check**: https://aimdoc.onrender.com/health
 
 ### ⚙️ **Direct Scrapy**
 

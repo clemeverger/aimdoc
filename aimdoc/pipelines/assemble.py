@@ -38,66 +38,12 @@ class AssemblePipeline:
         # Sort pages by order (from sidebar discovery)
         self.pages.sort(key=lambda p: (p.get('order', 999), p['url']))
         
-        # Generate outputs based on manifest configuration
-        output_mode = self.manifest.get('output', {}).get('mode', 'bundle')
-        
-        if output_mode == 'single':
-            self._generate_single_file()
-        elif output_mode == 'directory':
-            self._generate_directory_structure()
-        else:
-            self._generate_bundle()
+        # Generate directory structure (domain/path/file.md)
+        self._generate_directory_structure()
         
         # Generate metadata files
         self._generate_sources_json()
 
-    def _generate_bundle(self):
-        """Generate bundle output (README.md + chapters/*.md)"""
-        
-        # Generate README.md with front matter and TOC
-        readme_content = self._generate_readme()
-        
-        readme_path = self.build_dir / 'README.md'
-        with open(readme_path, 'w', encoding='utf-8') as f:
-            f.write(readme_content)
-        
-        # Generate individual chapter files
-        for i, page in enumerate(self.pages, 1):
-            chapter_filename = self._generate_chapter_filename(page, i)
-            chapter_path = self.chapters_dir / chapter_filename
-            
-            # Add chapter front matter
-            chapter_content = self._generate_chapter_content(page, i)
-            
-            with open(chapter_path, 'w', encoding='utf-8') as f:
-                f.write(chapter_content)
-            
-            self.spider.logger.info(f"Generated chapter: {chapter_filename}")
-
-    def _generate_single_file(self):
-        """Generate single file output (docpack.md)"""
-        
-        # Start with front matter
-        content_parts = [self._generate_front_matter()]
-        
-        # Add table of contents
-        toc = self._generate_table_of_contents()
-        if toc:
-            content_parts.extend(['', '## Table of Contents', '', toc])
-        
-        # Add all chapters
-        for i, page in enumerate(self.pages, 1):
-            content_parts.extend(['', '---', ''])  # Chapter separator
-            content_parts.append(self._clean_markdown_for_concat(page['md']))
-        
-        # Write single file
-        single_file_content = '\n'.join(content_parts)
-        output_path = self.build_dir / f"{self.manifest['name']}.md"
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(single_file_content)
-        
-        self.spider.logger.info(f"Generated single file: {output_path.name}")
 
     def _generate_directory_structure(self):
         """Generate directory structure based on URL paths"""
@@ -210,132 +156,6 @@ fetched_at: {page.get('fetched_at', '')}
         
         return front_matter + page['md']
 
-    def _generate_readme(self):
-        """Generate README.md content with front matter and TOC"""
-        parts = [self._generate_front_matter()]
-        
-        # Add description
-        description = self.manifest.get('description', f'Documentation for {self.manifest["name"]}')
-        parts.extend(['', description, ''])
-        
-        # Add table of contents
-        toc = self._generate_table_of_contents()
-        if toc:
-            parts.extend(['## Table of Contents', '', toc])
-        
-        # Add usage instructions
-        parts.extend([
-            '',
-            '## Usage',
-            '',
-            'This documentation was generated using DocPack. Each chapter is available as a separate markdown file in the `chapters/` directory.',
-            '',
-            '## Files',
-            '',
-            '- `README.md` - This overview and table of contents',
-            '- `chapters/` - Individual chapter markdown files', 
-            '- `SOURCES.json` - Source metadata and freshness information',
-            '',
-        ])
-        
-        return '\n'.join(parts)
-
-    def _generate_chapter_content(self, page, chapter_number):
-        """Generate content for an individual chapter file"""
-        
-        # Chapter front matter
-        front_matter = f'''---
-chapter: {chapter_number}
-title: "{self._escape_yaml(page.get('title', 'Untitled'))}"
-url: {page['url']}
-fetched_at: {page.get('fetched_at', '')}
----
-
-'''
-        
-        return front_matter + page['md']
-
-    def _generate_front_matter(self):
-        """Generate YAML front matter"""
-        
-        timestamp = datetime.now(timezone.utc).isoformat()
-        version = self._generate_version()
-        
-        front_matter = f'''---
-title: "DocPack: {self.manifest['name']}"
-built_at: {timestamp}
-sources: {len(self.pages)}
-version: "{version}"
-scope: {json.dumps(self.manifest.get('scope', []))}
----'''
-        
-        return front_matter
-
-    def _generate_table_of_contents(self):
-        """Generate table of contents"""
-        
-        if not self.pages:
-            return ''
-        
-        toc_lines = []
-        
-        for i, page in enumerate(self.pages, 1):
-            title = page.get('title', 'Untitled')
-            
-            # For bundle mode, link to chapter files
-            if self.manifest.get('output', {}).get('mode') != 'single':
-                chapter_filename = self._generate_chapter_filename(page, i)
-                link = f'chapters/{chapter_filename}'
-                toc_lines.append(f'{i}. [{title}]({link})')
-            else:
-                # For single file mode, create anchor links
-                anchor = self._create_anchor(title)
-                toc_lines.append(f'{i}. [{title}](#{anchor})')
-        
-        return '\n'.join(toc_lines)
-
-    def _generate_chapter_filename(self, page, chapter_number):
-        """Generate filename for a chapter"""
-        
-        title = page.get('title', 'untitled')
-        
-        # Create slug from title
-        slug = re.sub(r'[^a-zA-Z0-9\-_]', '-', title.lower())
-        slug = re.sub(r'-+', '-', slug).strip('-')
-        
-        # Limit slug length
-        if len(slug) > 50:
-            slug = slug[:50].rstrip('-')
-        
-        return f'{chapter_number:02d}-{slug}.md'
-
-    def _create_anchor(self, title):
-        """Create anchor link from title"""
-        anchor = re.sub(r'[^a-zA-Z0-9\-_\s]', '', title.lower())
-        anchor = re.sub(r'\s+', '-', anchor)
-        return anchor
-
-    def _clean_markdown_for_concat(self, markdown_content):
-        """Clean markdown for concatenation in single file"""
-        
-        # Remove YAML front matter if present
-        if markdown_content.startswith('---'):
-            parts = markdown_content.split('---', 2)
-            if len(parts) >= 3:
-                markdown_content = parts[2].strip()
-        
-        # Ensure h1 headings become h2 when concatenated
-        lines = markdown_content.split('\n')
-        processed_lines = []
-        
-        for line in lines:
-            if re.match(r'^# ', line):
-                # Convert h1 to h2
-                processed_lines.append('#' + line)
-            else:
-                processed_lines.append(line)
-        
-        return '\n'.join(processed_lines)
 
     def _generate_domain_metadata(self, domain):
         """Generate metadata files for a specific domain"""
@@ -428,3 +248,31 @@ scope: {json.dumps(self.manifest.get('scope', []))}
         # Escape quotes
         text = text.replace('"', '\\"')
         return text
+    
+    def _generate_sources_json(self):
+        """Generate SOURCES.json metadata file"""
+        sources = []
+        for i, page in enumerate(self.pages, 1):
+            source_info = {
+                'url': page['url'],
+                'title': page.get('title', ''),
+                'order': page.get('order', 999),
+                'fetched_at': page.get('fetched_at', ''),
+                'etag': page.get('etag', ''),
+                'last_modified': page.get('last_modified', ''),
+                'hash': page.get('hash', ''),
+                'status': page.get('status', 200)
+            }
+            sources.append(source_info)
+        
+        sources_path = self.build_dir / 'SOURCES.json'
+        with open(sources_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'generated_at': datetime.now(timezone.utc).isoformat(),
+                'total_pages': len(sources),
+                'manifest': self.manifest['name'],
+                'version': self._generate_version(),
+                'sources': sources
+            }, f, indent=2, ensure_ascii=False)
+        
+        self.spider.logger.info(f"Generated SOURCES.json with {len(sources)} pages")

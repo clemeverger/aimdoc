@@ -7,8 +7,8 @@ from pathlib import Path
 
 class ProgressTrackerPipeline:
     """
-    Optimized progress tracking pipeline that writes progress.json periodically
-    instead of on every item to avoid blocking I/O in the main thread.
+    Optimized progress tracking pipeline that updates spider stats in memory
+    instead of writing files to disk for better performance.
     """
     
     def __init__(self):
@@ -29,8 +29,8 @@ class ProgressTrackerPipeline:
             self.pages_found = spider.crawler.stats.get_value('pages_found', 0)
             self.sitemap_processed = spider.crawler.stats.get_value('sitemap_processed', False)
         
-        # Write initial progress file
-        self._write_progress_sync()
+        # Initialize spider stats
+        self._update_spider_stats()
         
     def process_item(self, item, spider):
         """Track item processing with minimal overhead."""
@@ -53,8 +53,8 @@ class ProgressTrackerPipeline:
                     if files_from_stats > 0:
                         self.files_created = files_from_stats
                 
-                # Write progress file immediately (non-blocking)
-                self._write_progress_async()
+                # Update spider stats immediately
+                self._update_spider_stats()
         
         return item
     
@@ -75,77 +75,45 @@ class ProgressTrackerPipeline:
             if files_from_stats > 0:
                 self.files_created = files_from_stats
         
-        # Final progress write
-        self._write_progress_sync()
-        
-        # Write scraping summary for the API
-        self._write_scraping_summary()
+        # Final stats update
+        self._update_spider_stats()
     
-    def _write_progress_async(self):
-        """Write progress file in a separate thread to avoid blocking."""
-        if not self.manifest_path:
+    def _update_spider_stats(self):
+        """Update spider stats in memory and write minimal status file."""
+        if not hasattr(self.spider, 'crawler') or not hasattr(self.spider.crawler, 'stats'):
             return
             
-        # Use a separate thread for I/O
-        thread = threading.Thread(target=self._write_progress_sync, daemon=True)
-        thread.start()
+        with self._lock:
+            # Update all progress stats in spider memory
+            self.spider.crawler.stats.set_value('progress_pages_found', self.pages_found)
+            self.spider.crawler.stats.set_value('progress_pages_scraped', self.pages_scraped)
+            self.spider.crawler.stats.set_value('progress_files_created', self.files_created)
+            self.spider.crawler.stats.set_value('progress_sitemap_processed', self.sitemap_processed)
+            
+            # Write minimal status file for JobService monitoring (much lighter than before)
+            self._write_minimal_status()
     
-    def _write_progress_sync(self):
-        """Write progress file synchronously (called from background thread)."""
-        if not self.manifest_path:
-            return
-            
-        try:
-            manifest_dir = os.path.dirname(self.manifest_path)
-            progress_file = os.path.join(manifest_dir, "progress.json")
-            
-            with self._lock:
-                progress_data = {
-                    "pages_found": self.pages_found,
-                    "pages_scraped": self.pages_scraped,
-                    "files_created": self.files_created,
-                    "sitemap_processed": self.sitemap_processed
-                }
-            
-            # Atomic write using temp file
-            temp_file = progress_file + '.tmp'
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(progress_data, f, indent=2)
-            
-            # Atomic move
-            if os.name == 'nt':  # Windows
-                if os.path.exists(progress_file):
-                    os.remove(progress_file)
-            os.rename(temp_file, progress_file)
-            
-        except Exception as e:
-            # Log but don't fail the spider
-            if hasattr(self, 'spider') and hasattr(self.spider, 'logger'):
-                self.spider.logger.warning(f"Failed to write progress file: {e}")
-    
-    def _write_scraping_summary(self):
-        """Write scraping summary for the API to read final results."""
+    def _write_minimal_status(self):
+        """Write minimal status file for cross-process monitoring."""
         if not self.manifest_path:
             return
             
         try:
             manifest_dir = os.path.dirname(self.manifest_path)
-            summary_file = os.path.join(manifest_dir, "scraping_summary.json")
+            status_file = os.path.join(manifest_dir, "status.json")
             
-            # Get failed pages from spider if available
-            failed_pages = getattr(self.spider, 'failed_pages', [])
-            
-            summary_data = {
-                "pages_discovered": self.pages_found,
-                "pages_scraped": self.pages_scraped,  
-                "pages_failed": len(failed_pages),
+            # Only essential data, no complex formatting
+            status_data = {
+                "pages_found": self.pages_found,
+                "pages_scraped": self.pages_scraped,
                 "files_created": self.files_created,
-                "failed_pages": failed_pages[:10]  # Only store first 10 failed pages
+                "sitemap_processed": self.sitemap_processed
             }
             
-            with open(summary_file, 'w', encoding='utf-8') as f:
-                json.dump(summary_data, f, indent=2)
+            # Write directly, no temp file needed for this tiny file
+            with open(status_file, 'w') as f:
+                json.dump(status_data, f)
                 
         except Exception as e:
-            if hasattr(self, 'spider') and hasattr(self.spider, 'logger'):
-                self.spider.logger.warning(f"Failed to write scraping summary: {e}")
+            # Silently fail to avoid spider disruption
+            pass

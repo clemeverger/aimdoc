@@ -269,7 +269,7 @@ class JobService:
         print(f"[{datetime.now()}] MONITOR: Starting monitoring for job {job_id}, PID {process.pid}")
         
         job = self.jobs[job_id]
-        progress_file = os.path.join(job["job_dir"], "progress.json")
+        status_file = os.path.join(job["job_dir"], "status.json")
         last_item_count = 0
         last_update_time = start_time
         current_phase = "discovering"
@@ -293,18 +293,18 @@ class JobService:
                 current_item_count = 0
                 current_files_count = 0
                 
-                # Check for progress file from spider and detect phase transitions
-                print(f"[{datetime.now()}] MONITOR: Checking for progress file: {progress_file}, exists: {os.path.exists(progress_file)}")
-                if os.path.exists(progress_file):
+                # Check for status file from spider and detect phase transitions
+                print(f"[{datetime.now()}] MONITOR: Checking for status file: {status_file}, exists: {os.path.exists(status_file)}")
+                if os.path.exists(status_file):
                         try:
-                            with open(progress_file, 'r', encoding='utf-8') as f:
-                                progress_data = json.load(f)
-                                print(f"[{datetime.now()}] MONITOR: Progress data: {progress_data}")
+                            with open(status_file, 'r', encoding='utf-8') as f:
+                                status_data = json.load(f)
+                                print(f"[{datetime.now()}] MONITOR: Status data: {status_data}")
                                 # Check if sitemap discovery is complete
-                                if not sitemap_discovery_complete and progress_data.get("sitemap_processed", False):
+                                if not sitemap_discovery_complete and status_data.get("sitemap_processed", False):
                                     sitemap_discovery_complete = True
                                     current_phase = "scraping"
-                                    job["progress"]["pages_found"] = progress_data.get("pages_found", 0)
+                                    job["progress"]["pages_found"] = status_data.get("pages_found", 0)
                                     
                                     # Send phase transition update
                                     await self.broadcast_job_update(job_id, {
@@ -317,16 +317,16 @@ class JobService:
                                     print(f"[{datetime.now()}] MONITOR: Phase transition to scraping - {job['progress']['pages_found']} pages found")
                                 
                                 # Update progress data from spider
-                                if progress_data.get("pages_found", 0) > 0:
-                                    job["progress"]["pages_found"] = progress_data["pages_found"]
+                                if status_data.get("pages_found", 0) > 0:
+                                    job["progress"]["pages_found"] = status_data["pages_found"]
                                 
                                 # Use spider's progress tracking for pages_scraped and files_created
-                                if "pages_scraped" in progress_data:
-                                    job["progress"]["pages_scraped"] = progress_data["pages_scraped"]
-                                if "files_created" in progress_data:
-                                    job["progress"]["files_created"] = progress_data["files_created"]
+                                if "pages_scraped" in status_data:
+                                    job["progress"]["pages_scraped"] = status_data["pages_scraped"]
+                                if "files_created" in status_data:
+                                    job["progress"]["files_created"] = status_data["files_created"]
                         except Exception as e:
-                            print(f"[{datetime.now()}] MONITOR: Error reading progress file: {e}")
+                            print(f"[{datetime.now()}] MONITOR: Error reading status file: {e}")
                 
                 # Count files created in real-time
                 current_files_count = 0

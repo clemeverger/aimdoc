@@ -3,7 +3,7 @@ import { Command } from 'commander'
 import fs from 'fs-extra'
 import path from 'path'
 import { AimdocAPI } from '../api'
-import { printError, printInfo, printSuccess } from '../utils'
+import { printError, printInfo } from '../utils'
 
 export function createDiagnoseCommand(): Command {
   const diagnoseCommand = new Command('diagnose')
@@ -37,7 +37,7 @@ export function createDiagnoseCommand(): Command {
           console.log(`✅ Pages scraped: ${chalk.bold(summary.pages_scraped || 0)}`)
           console.log(`❌ Pages failed: ${chalk.bold(summary.pages_failed || 0)}`)
           console.log(`🔍 Pages discovered: ${chalk.bold(summary.pages_discovered || 'Unknown')}`)
-          
+
           if (summary.build_size) {
             const sizeInMB = (summary.build_size / (1024 * 1024)).toFixed(2)
             console.log(`📦 Build size: ${sizeInMB} MB`)
@@ -54,10 +54,10 @@ export function createDiagnoseCommand(): Command {
 
             if (await fs.pathExists(summaryFile)) {
               const summaryData = await fs.readJson(summaryFile)
-              
+
               console.log(`\n=== Detailed Diagnostics ===`)
               console.log(`Spider close reason: ${summaryData.spider_close_reason || 'Unknown'}`)
-              
+
               // Show discovery errors first as they're often the root cause
               if (summaryData.discovery_errors && summaryData.discovery_errors.length > 0) {
                 console.log(`\n❌ Discovery Errors (${summaryData.discovery_errors.length}):`)
@@ -65,17 +65,16 @@ export function createDiagnoseCommand(): Command {
                   console.log(`  ${index + 1}. ${chalk.red(error.url)}`)
                   console.log(`     Error: ${error.error_type}: ${error.error}`)
                 })
-                
+
                 // Add helpful explanation for common sitemap issues
-                const sitemapErrors = summaryData.discovery_errors.filter((e: any) => 
-                  e.url.includes('sitemap') || e.url.includes('robots.txt'))
+                const sitemapErrors = summaryData.discovery_errors.filter((e: any) => e.url.includes('sitemap') || e.url.includes('robots.txt'))
                 if (sitemapErrors.length > 0) {
                   console.log(`\n💡 ${chalk.yellow('Tip:')} This website appears to have no sitemap or an inaccessible sitemap.`)
                   console.log(`   Consider trying a different website that has a sitemap.xml file.`)
                   console.log(`   You can check if a site has a sitemap by visiting: ${chalk.underline('[website-url]/sitemap.xml')}`)
                 }
               }
-              
+
               if (summaryData.failed_pages && summaryData.failed_pages.length > 0) {
                 console.log(`\n❌ Failed Pages (${summaryData.failed_pages.length}):`)
                 summaryData.failed_pages.forEach((failed: any, index: number) => {
@@ -109,7 +108,6 @@ export function createDiagnoseCommand(): Command {
         if (job.error_message) {
           console.log(`\n❌ Error: ${chalk.red(job.error_message)}`)
         }
-
       } catch (error) {
         console.error('Detailed error:', error)
         printError('Failed to diagnose job', error as Error)
@@ -122,11 +120,11 @@ export function createDiagnoseCommand(): Command {
 
 function getStatusDisplay(status: string): string {
   const statusColors = {
-    'completed': chalk.green('✅ COMPLETED'),
-    'failed': chalk.red('❌ FAILED'),
-    'running': chalk.yellow('🔄 RUNNING'),
-    'pending': chalk.blue('⏳ PENDING')
+    completed: chalk.green('✅ COMPLETED'),
+    failed: chalk.red('❌ FAILED'),
+    running: chalk.yellow('🔄 RUNNING'),
+    pending: chalk.blue('⏳ PENDING'),
   }
-  
+
   return statusColors[status as keyof typeof statusColors] || chalk.gray(`❓ ${status.toUpperCase()}`)
 }

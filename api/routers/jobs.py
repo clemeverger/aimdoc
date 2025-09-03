@@ -196,31 +196,3 @@ async def websocket_job_updates(websocket: WebSocket, job_id: str):
         await job_service.remove_websocket_connection(job_id, websocket)
 
 
-@router.get("/jobs/{job_id}/download-zip")
-async def download_job_zip(job_id: str):
-    """Download job results as a ZIP file"""
-    job_status = job_service.get_job_status(job_id)
-    
-    if not job_status:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    
-    if job_status.status != JobStatus.COMPLETED:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Job {job_id} is not completed. Current status: {job_status.status}"
-        )
-    
-    # Create ZIP file
-    zip_path = job_service.create_zip_download(job_id)
-    if not zip_path or not Path(zip_path).exists():
-        raise HTTPException(status_code=500, detail="Failed to create ZIP file")
-    
-    # Get job request info for filename
-    results = job_service.get_job_results(job_id)
-    filename = f"{results.metadata.get('name', job_id)}-results.zip" if results else f"{job_id}-results.zip"
-    
-    return FileResponse(
-        path=zip_path,
-        filename=filename,
-        media_type='application/zip'
-    )

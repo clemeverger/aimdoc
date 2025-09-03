@@ -3,7 +3,6 @@ import json
 import os
 import tempfile
 import uuid
-import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Set
@@ -624,42 +623,7 @@ class JobService:
             for websocket in disconnected:
                 self.websocket_connections[job_id].discard(websocket)
     
-    def create_zip_download(self, job_id: str) -> Optional[str]:
-        """Create a ZIP file of job results for download"""
-        if job_id not in self.jobs:
-            return None
-        
-        job = self.jobs[job_id]
-        if job["status"] != JobStatus.COMPLETED:
-            return None
-        
-        job_path = Path(job["job_dir"])
-        if not job_path.exists():
-            return None
-        
-        # The actual content is in a docs subdirectory named after the project
-        project_name = job["request"].get("name", "default-project")
-        content_path = job_path / "docs" / project_name
-        
-        # Check for new structure first
-        if not content_path.exists():
-            # Fallback to old structure for compatibility
-            legacy_path = job_path / project_name
-            if legacy_path.exists():
-                content_path = legacy_path
-            else:
-                return None
 
-        # Create ZIP file
-        zip_path = job_path / f"{job['request']['name']}-results.zip"
-        
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for file_path in content_path.glob("**/*"):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(content_path)
-                    zipf.write(file_path, arcname)
-        
-        return str(zip_path)
     
     async def _get_detailed_error_message(self, job_dir: Path) -> str:
         """Get detailed error message from scraping summary if available"""

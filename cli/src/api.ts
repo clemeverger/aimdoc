@@ -78,14 +78,7 @@ export class AimdocAPI {
     await this.client.post(`/api/v1/jobs/${jobId}/cancel`);
   }
 
-  async downloadJobZip(jobId: string, outputPath: string): Promise<void> {
-    const response = await this.client.get(`/api/v1/jobs/${jobId}/download-zip`, {
-      responseType: 'arraybuffer'
-    });
-    
-    const buffer = Buffer.from(response.data);
-    await fs.writeFile(outputPath, buffer);
-  }
+
 
   createJobWebSocket(jobId: string): WebSocket {
     const wsUrl = this.config.api_url.replace(/^http/, 'ws') + `/api/v1/jobs/${jobId}/ws`;

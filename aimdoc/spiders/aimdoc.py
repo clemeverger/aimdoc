@@ -20,11 +20,12 @@ class AimdocSpider(scrapy.Spider):
         "AUTOTHROTTLE_ENABLED": True,
     }
 
-    def __init__(self, manifest, *args, **kwargs):
+    def __init__(self, manifest, job_dir=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
         # Store manifest path for progress file
         self.manifest_path = manifest
+        self.job_dir = job_dir
         
         # Load manifest file
         with open(manifest, 'r', encoding='utf-8') as f:

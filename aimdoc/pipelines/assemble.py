@@ -23,12 +23,15 @@ class AssemblePipeline:
 
         project_name = self.manifest.get('name', 'default-project')
         
-        # Use absolute paths to avoid working directory confusion
-        # Get the current working directory (should be the job directory)
-        job_dir = Path(os.getcwd()).resolve()
+        # Use job directory passed from spider (more reliable than os.getcwd)
+        if spider.job_dir:
+            job_dir = Path(spider.job_dir).resolve()
+        else:
+            # Fallback to current working directory if job_dir not provided
+            job_dir = Path(os.getcwd()).resolve()
         
-        # Log the current working directory for debugging
-        spider.logger.info(f"Current working directory: {job_dir}")
+        # Log the job directory for debugging
+        spider.logger.info(f"Using job directory: {job_dir}")
         
         # Create docs directory inside the job directory, not at the project root
         # This ensures files are created where job_service.py expects them

@@ -134,13 +134,13 @@ class JobService:
             print(f"[{datetime.now()}] RUN_SCRAPY: Original CWD: {original_cwd}")
             print(f"[{datetime.now()}] RUN_SCRAPY: Job dir: {job_dir}")
             
-            # Change to job directory - this ensures that the docs folder is created in the job directory
-            os.chdir(job_dir)
+            # No need to change directory since we pass job_dir explicitly to the spider
             
             # Run scrapy command with reduced logging
             cmd = [
                 "scrapy", "crawl", "aimdoc", 
                 "-a", f"manifest={job['manifest_path']}",
+                "-a", f"job_dir={job_dir}",
                 "-L", "WARNING"  # Only show WARNING and ERROR logs
             ]
             print(f"[{datetime.now()}] RUN_SCRAPY: Command to run: {' '.join(cmd)}")
@@ -287,8 +287,6 @@ class JobService:
             # Clean up process reference
             if job_id in self.job_processes:
                 del self.job_processes[job_id]
-            
-            os.chdir(original_cwd)
     
     async def _monitor_process(self, job_id: str, process: subprocess.Popen, timeout: int = 1800):
         """Monitor process asynchronously without blocking the API"""
@@ -315,10 +313,11 @@ class JobService:
                 print(f"[{datetime.now()}] MONITOR: Process completed with return code {return_code}")
                 return "", "", return_code
             
-            # Check progress every 10 seconds instead of 5 to reduce I/O and memory usage
-            if loop_count % 10 == 0:
+            # Check progress every 5 seconds for responsive WebSocket updates
+            if loop_count % 5 == 0:
                 try:
                     current_item_count = 0
+                    current_files_count = 0
                     
                     # Check for progress file from spider and detect phase transitions
                     # Only log progress file checks occasionally to reduce noise
@@ -464,8 +463,8 @@ class JobService:
                     process.wait()
                 return "", "", -1
             
-            # Sleep for 10 seconds before checking again (non-blocking) - reduced frequency for better memory
-            await asyncio.sleep(10)
+            # Sleep for 1 second, but check progress every 5 iterations (5 seconds)
+            await asyncio.sleep(1)
     
     def get_job_status(self, job_id: str) -> Optional[JobStatusResponse]:
         """Get job status"""
@@ -509,21 +508,21 @@ class JobService:
         if not job_path.exists():
             return None
         
-        # The actual content is in the root docs directory named after the project
+        # The actual content is in a docs subdirectory inside the job directory
         project_name = job["request"].get("name", "default-project")
-        root_docs_path = Path(__file__).parent.parent.parent / "docs" / project_name
+        content_path = job_path / "docs" / project_name
         
-        # Only use root docs path
-        if not root_docs_path.exists():
+        # Check if the content path exists
+        if not content_path.exists():
             return None
 
         # List all files in the docs directory
         files = []
         try:
-            for file_path in root_docs_path.glob("**/*"):
+            for file_path in content_path.glob("**/*"):
                 if file_path.is_file():
-                    files.append(str(file_path.relative_to(root_docs_path)))
-        except Exception as e:
+                    files.append(str(file_path.relative_to(content_path)))
+        except Exception:
             # Handle any file system errors gracefully
             pass
         
@@ -531,7 +530,7 @@ class JobService:
             job_id=job_id,
             status=job["status"],
             files=files,
-            build_path=str(root_docs_path),
+            build_path=str(content_path),
             metadata=job.get("result_summary", {})
         )
     

@@ -15,6 +15,7 @@ class AssemblePipeline:
     def __init__(self):
         self.pages = []
         self.output_dir = None
+        self.files_created_count = 0
 
     def open_spider(self, spider):
         """Initialize the pipeline and create the main output directory."""
@@ -81,6 +82,9 @@ class AssemblePipeline:
             try:
                 with open(target_path, 'w', encoding='utf-8') as f:
                     f.write(content)
+                # Update file creation progress
+                self.files_created_count += 1
+                self._update_file_progress()
             except OSError as e:
                 self.spider.logger.error(f"Failed to write file {target_path}: {e}")
 
@@ -167,3 +171,38 @@ class AssemblePipeline:
         if not text:
             return ''
         return text.replace('"', '\\"')
+
+    def _update_file_progress(self):
+        """Update progress file with files created count"""
+        try:
+            import json
+            manifest_path = getattr(self.spider, 'manifest_path', None)
+            if not manifest_path:
+                return
+                
+            manifest_dir = os.path.dirname(manifest_path)
+            progress_file = os.path.join(manifest_dir, "progress.json")
+            
+            # Read existing progress file
+            progress_data = {
+                "pages_found": 0,
+                "pages_scraped": 0,
+                "files_created": self.files_created_count,
+                "sitemap_processed": True
+            }
+            
+            if os.path.exists(progress_file):
+                try:
+                    with open(progress_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                        progress_data.update(existing_data)
+                        progress_data["files_created"] = self.files_created_count
+                except Exception:
+                    pass
+            
+            # Write updated progress
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f, indent=2)
+                
+        except Exception as e:
+            self.spider.logger.warning(f"Failed to update file progress: {e}")

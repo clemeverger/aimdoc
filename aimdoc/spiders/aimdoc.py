@@ -24,6 +24,9 @@ class AimdocSpider(scrapy.Spider):
     def __init__(self, manifest, since=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
+        # Store manifest path for progress file
+        self.manifest_path = manifest
+        
         # Load manifest file
         with open(manifest, 'r', encoding='utf-8') as f:
             self.manifest = json.load(f)
@@ -32,6 +35,7 @@ class AimdocSpider(scrapy.Spider):
         self.discovered_urls = set()
         self.chapter_order = {}
         self.chapters = {}  # Store chapter information extracted from URLs
+        self.pages_scraped_count = 0  # Track scraped pages for progress
         
         # Extract minimal configuration from manifest
         self.name_project = self.manifest.get("name", "aimdoc")
@@ -142,6 +146,9 @@ class AimdocSpider(scrapy.Spider):
         item = self._extract_page_content(response)
         self.logger.info(f"Extracted item: title='{item['title']}', content_length={len(item['html'])}")
         yield item
+        
+        # Update progress after yielding item
+        self._update_scraped_progress()
 
     def _extract_page_content(self, response):
         """Extract content from a single page"""
@@ -264,6 +271,30 @@ class AimdocSpider(scrapy.Spider):
             
             # Store chapter information
             self.chapters = {name: len(urls) for name, urls in chapter_urls.items()}
+            
+            # Write progress info for the backend to read
+            try:
+                import os
+                # Write progress file in the same directory as the manifest (job directory)
+                manifest_dir = os.path.dirname(self.manifest_path) if hasattr(self, 'manifest_path') else os.getcwd()
+                progress_file = os.path.join(manifest_dir, "progress.json")
+                progress_data = {
+                    "pages_found": urls_found,
+                    "pages_scraped": 0,
+                    "files_created": 0,
+                    "sitemap_processed": True
+                }
+                self.logger.info(f"DEBUG: About to write progress file to {progress_file}")
+                self.logger.info(f"DEBUG: Manifest path: {self.manifest_path}")
+                self.logger.info(f"DEBUG: Manifest dir: {manifest_dir}")
+                with open(progress_file, 'w', encoding='utf-8') as f:
+                    import json
+                    json.dump(progress_data, f, indent=2)
+                self.logger.info(f"✅ PROGRESS FILE WRITTEN: {progress_file} with {urls_found} pages found")
+            except Exception as e:
+                self.logger.error(f"❌ FAILED TO WRITE PROGRESS FILE: {e}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
             
             # Log detailed statistics
             self.logger.info(f"=== SITEMAP PROCESSING COMPLETE ===")
@@ -433,6 +464,38 @@ class AimdocSpider(scrapy.Spider):
             self.logger.info(f"_in_scope({url}) -> {url_is_doc} (URL contains '/docs/')")
             self._scope_log_count += 1
         return url_is_doc
+
+    def _update_scraped_progress(self):
+        """Update progress file with scraped pages count"""
+        self.pages_scraped_count += 1
+        try:
+            import os
+            manifest_dir = os.path.dirname(self.manifest_path) if hasattr(self, 'manifest_path') else os.getcwd()
+            progress_file = os.path.join(manifest_dir, "progress.json")
+            
+            # Read existing progress file if it exists
+            progress_data = {
+                "pages_found": 0,
+                "pages_scraped": self.pages_scraped_count,
+                "files_created": 0,
+                "sitemap_processed": True
+            }
+            
+            if os.path.exists(progress_file):
+                try:
+                    with open(progress_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                        progress_data.update(existing_data)
+                        progress_data["pages_scraped"] = self.pages_scraped_count
+                except Exception:
+                    pass
+            
+            # Write updated progress
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f, indent=2)
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to update progress: {e}")
 
     def _now(self):
         """Get current timestamp in ISO format"""

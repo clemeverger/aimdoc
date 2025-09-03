@@ -59,9 +59,18 @@ export interface CLIError extends Error {
   statusCode?: number
 }
 
+export enum JobPhase {
+  DISCOVERING = 'discovering',
+  SCRAPING = 'scraping',
+  CONVERTING = 'converting',
+  DOWNLOADING = 'downloading',
+  COMPLETED = 'completed'
+}
+
 export interface WebSocketJobUpdate {
   type: 'status_update' | 'pong'
   status?: JobStatus
+  phase?: JobPhase
   message?: string
   progress?: {
     pages_found?: number

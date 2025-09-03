@@ -1,4 +1,5 @@
 import chalk from 'chalk'
+import cliProgress from 'cli-progress'
 import { Command } from 'commander'
 import fs from 'fs-extra'
 import inquirer from 'inquirer'
@@ -6,7 +7,7 @@ import ora from 'ora'
 import path from 'path'
 import WebSocket from 'ws'
 import { AimdocAPI } from '../api'
-import { JobStatus, ScrapeRequest, WebSocketJobUpdate } from '../types'
+import { JobPhase, JobStatus, ScrapeRequest, WebSocketJobUpdate } from '../types'
 import { extractDomainName, isValidUrl, printError, printInfo, printSuccess, validateOutputDirectory } from '../utils'
 
 export function createScrapeCommand(): Command {
@@ -22,7 +23,10 @@ export function createScrapeCommand(): Command {
         const api = new AimdocAPI()
 
         // Health check
-        const spinner = ora('Connecting to API...').start()
+        const spinner = ora({
+          text: 'Connecting to API...',
+          discardStdin: false,
+        }).start()
         const isHealthy = await api.healthCheck()
 
         if (!isHealthy) {
@@ -39,7 +43,10 @@ export function createScrapeCommand(): Command {
         const folderName = scrapeRequest.name // Use project name as folder name
 
         // Create job
-        const createSpinner = ora('Creating scrape job...').start()
+        const createSpinner = ora({
+          text: 'Creating scrape job...',
+          discardStdin: false,
+        }).start()
         const job = await api.createScrapeJob(scrapeRequest)
         createSpinner.succeed(`Job created: ${chalk.bold(job.job_id)}`)
 
@@ -132,41 +139,132 @@ async function getOutputDirectory(options: any): Promise<string> {
   return outputDir
 }
 
+// Helper functions to avoid TypeScript control flow issues
+function stopSpinner(spinner: ReturnType<typeof ora> | null): void {
+  if (spinner) {
+    spinner.stop()
+  }
+}
+
+function succeedSpinner(spinner: ReturnType<typeof ora> | null, message: string): void {
+  if (spinner) {
+    spinner.succeed(message)
+  }
+}
+
+function stopProgressBar(bar: cliProgress.SingleBar | null): void {
+  if (bar) {
+    bar.stop()
+  }
+}
+
 async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
-  const spinner = ora('Connecting to job...').start()
+  console.log('Connecting to job...')
+
   let ws: WebSocket | null = null
+  let progressBar: cliProgress.SingleBar | null = null
+  let currentSpinner: ReturnType<typeof ora> | null = null
+  let lastProgress = { pages_scraped: 0, files_created: 0, pages_found: 0 }
+  let currentPhase: JobPhase | null = null
 
   try {
     ws = await api.connectToJobWebSocket(
       jobId,
       async (update: WebSocketJobUpdate) => {
         if (update.type === 'status_update') {
-          if (spinner) {
-            let message = update.message || 'Processing...'
-
-            if (update.progress) {
-              const { pages_found = 0, pages_scraped = 0, files_created = 0 } = update.progress
-              if (pages_found > 0 || pages_scraped > 0 || files_created > 0) {
-                message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`
-              }
-            }
-
-            spinner.text = message
+          // Handle initial connection message
+          if (update.message && update.message.includes('Connected to job')) {
+            console.log(`✓ Connected to job ${jobId}! Starting scrape...`)
           }
 
-          if (update.status === JobStatus.COMPLETED) {
-            if (spinner) spinner.succeed('Scraping completed successfully!')
+          const phase = update.phase || JobPhase.DISCOVERING
+          const { pages_found = 0, pages_scraped = 0, files_created = 0 } = update.progress || {}
 
+          // Handle phase transitions
+          if (phase !== currentPhase) {
+            // Stop current progress indicator
+            stopProgressBar(progressBar)
+            progressBar = null
+            stopSpinner(currentSpinner)
+            currentSpinner = null
+
+            currentPhase = phase
+
+            // Start appropriate progress indicator for new phase
+            if (phase === JobPhase.DISCOVERING) {
+              currentSpinner = ora({
+                text: 'Discovering sitemap and pages...',
+                discardStdin: false,
+              }).start()
+            } else if (phase === JobPhase.SCRAPING && pages_found > 0) {
+              succeedSpinner(currentSpinner, `Found ${pages_found} pages to scrape`)
+              currentSpinner = null
+
+              console.log(`\n🔍 Scraping ${pages_found} pages...`)
+              progressBar = new cliProgress.SingleBar(
+                {
+                  format: 'Scraping |{bar}| {value}/{total} pages | {files_created} files created',
+                  barCompleteChar: '\u2588',
+                  barIncompleteChar: '\u2591',
+                  hideCursor: true,
+                  clearOnComplete: false,
+                  stopOnComplete: false,
+                  barsize: 40,
+                },
+                cliProgress.Presets.shades_classic
+              )
+              progressBar.start(pages_found, pages_scraped, { files_created })
+            } else if (phase === JobPhase.CONVERTING) {
+              stopProgressBar(progressBar)
+              progressBar = null
+              currentSpinner = ora({
+                text: 'Converting pages to markdown...',
+                discardStdin: false,
+              }).start()
+            } else if (phase === JobPhase.DOWNLOADING) {
+              stopSpinner(currentSpinner)
+              currentSpinner = null
+              currentSpinner = ora({
+                text: 'Preparing files for download...',
+                discardStdin: false,
+              }).start()
+            }
+          }
+
+          // Update progress indicators
+          if (phase === JobPhase.SCRAPING && progressBar) {
+            progressBar.update(pages_scraped, { files_created })
+          } else if (phase === JobPhase.CONVERTING && currentSpinner) {
+            currentSpinner.text = `Converting to markdown... ${files_created} files created`
+          } else if (currentSpinner && update.message) {
+            currentSpinner.text = update.message
+          }
+
+          lastProgress = { pages_scraped, files_created, pages_found }
+
+          if (update.status === JobStatus.COMPLETED) {
+            // Stop all progress indicators
+            if (progressBar) {
+              progressBar.update(pages_scraped, { files_created })
+              stopProgressBar(progressBar)
+            }
+            succeedSpinner(currentSpinner, 'Scraping completed!')
+            currentSpinner = null
+
+            console.log('\n✅ Scraping completed successfully!')
             if (update.result_summary) {
-              printSuccess(`Created ${update.result_summary.files_created} files from ${update.progress?.pages_scraped || 0} pages`)
+              printSuccess(`Created ${update.result_summary.files_created} files from ${pages_scraped} pages`)
             }
 
-            // Auto-download results
             await downloadResults(api, jobId, projectName, outputDir, folderName)
-
             ws?.close()
           } else if (update.status === JobStatus.FAILED) {
-            if (spinner) spinner.fail('Scraping failed')
+            // Stop all progress indicators
+            stopProgressBar(progressBar)
+            if (currentSpinner) {
+              currentSpinner.fail('Scraping failed')
+            }
+            console.log('\n❌ Scraping failed')
             printError(update.error || update.message || 'Job failed with unknown error')
             ws?.close()
             process.exit(1)
@@ -174,26 +272,28 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
         }
       },
       (error: Error) => {
-        console.log('WebSocket error, falling back to polling...')
-        // Don't exit, let it fall through to fallback
+        console.log('❌ WebSocket connection failed')
+        printError('WebSocket connection failed', error)
+        process.exit(1)
       },
       () => {
         // WebSocket closed
       }
     )
 
-    if (spinner) spinner.text = 'Connected! Starting scrape...'
+    // Connection message will come from WebSocket initial update
   } catch (error) {
-    // Fallback to polling if WebSocket fails
-    if (spinner) {
-      spinner.text = 'WebSocket unavailable, falling back to polling...'
-    }
-    await waitForCompletionFallback(api, jobId, projectName, outputDir, folderName)
+    console.log('❌ WebSocket unavailable')
+    printError('WebSocket unavailable', error as Error)
+    process.exit(1)
   }
 }
 
 async function downloadResults(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
-  const downloadSpinner = ora('Downloading results...').start()
+  const downloadSpinner = ora({
+    text: 'Downloading and organizing files...',
+    discardStdin: false,
+  }).start()
 
   try {
     // Create the final directory
@@ -224,12 +324,14 @@ async function downloadResults(api: AimdocAPI, jobId: string, projectName: strin
         const fileData = await api.downloadFile(jobId, filePath)
 
         // Determine target path
+
         const targetPath = path.join(finalDir, filePath)
 
         // Ensure directory exists
         const targetDir = path.dirname(targetPath)
         if (!downloadedDirs.has(targetDir)) {
           await fs.ensureDir(targetDir)
+
           downloadedDirs.add(targetDir)
         }
 
@@ -317,58 +419,5 @@ ${Object.entries(structure)
   } catch (error) {
     // Don't fail the whole process if README generation fails
     console.warn('Warning: Could not generate README.md index')
-  }
-}
-
-async function waitForCompletionFallback(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
-  const spinner = ora('Starting scrape...').start()
-
-  let lastStatus: JobStatus | null = null
-  let lastProgress: any = null
-
-  while (true) {
-    try {
-      const status = await api.getJobStatus(jobId)
-
-      if (spinner) {
-        if (status.status !== lastStatus || JSON.stringify(status.progress) !== JSON.stringify(lastProgress)) {
-          let message = 'Processing...'
-          if (status.progress) {
-            const { pages_found = 0, pages_scraped = 0, files_created = 0 } = status.progress
-            if (pages_found > 0) {
-              message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`
-            }
-          }
-
-          spinner.text = message
-          lastStatus = status.status
-          lastProgress = status.progress
-        }
-      }
-
-      if (status.status === JobStatus.COMPLETED) {
-        if (spinner) spinner.succeed('Scraping completed successfully!')
-
-        if (status.result_summary) {
-          printSuccess(`Created ${status.result_summary.files_created} files`)
-        }
-
-        await downloadResults(api, jobId, projectName, outputDir, folderName)
-        break
-      }
-
-      if (status.status === JobStatus.FAILED) {
-        if (spinner) spinner.fail('Scraping failed')
-        printError(status.error_message || 'Job failed with unknown error')
-        process.exit(1)
-      }
-
-      // Wait before checking again
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-    } catch (error) {
-      if (spinner) spinner.fail('Error checking job status')
-      printError('Failed to check job status', error as Error)
-      process.exit(1)
-    }
   }
 }

@@ -7,6 +7,7 @@ import ora from 'ora'
 import path from 'path'
 import WebSocket from 'ws'
 import { AimdocAPI } from '../api'
+import { ensureApiConnection } from '../middleware/api-connection'
 import { JobPhase, JobStatus, ScrapeRequest, WebSocketJobUpdate } from '../types'
 import { extractDomainName, isValidUrl, printError, printInfo, printSuccess, validateOutputDirectory } from '../utils'
 
@@ -20,20 +21,8 @@ export function createScrapeCommand(): Command {
     .option('-o, --output-dir <dir>', 'Output directory for the documentation', './docs')
     .action(async (url: string | undefined, options) => {
       try {
-        const api = new AimdocAPI()
-
-        // Health check
-        const spinner = ora({
-          text: 'Connecting to API...',
-          discardStdin: false,
-        }).start()
-        const isHealthy = await api.healthCheck()
-
-        if (!isHealthy) {
-          spinner.fail('API is not available. Make sure the server is running.')
-          process.exit(1)
-        }
-        spinner.succeed('Connected to API')
+        // Ensure API connection with centralized retry logic
+        const api = await ensureApiConnection()
 
         // Get scrape parameters
         const scrapeRequest = await getScrapeRequest(url, options)
@@ -162,6 +151,7 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
   let currentSpinner: ReturnType<typeof ora> | null = null
   let lastProgress = { pages_scraped: 0, files_created: 0, pages_found: 0 }
   let currentPhase: JobPhase | null = null
+  let connectionMessageHandled = false
 
   // Start connection spinner
   const connectionSpinner = ora({
@@ -174,10 +164,10 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
       jobId,
       async (update: WebSocketJobUpdate) => {
         if (update.type === 'status_update') {
-          // Handle initial connection message
-          if (update.message && update.message.includes('Connected to job')) {
+          // Handle initial connection message (only once)
+          if (update.message && update.message.includes('Connected to job') && !connectionMessageHandled) {
+            connectionMessageHandled = true
             connectionSpinner.succeed('Connected to job')
-            printInfo('Starting scrape...')
           }
 
           const phase = update.phase || JobPhase.DISCOVERING
@@ -202,11 +192,9 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
             } else if (phase === JobPhase.SCRAPING && pages_found > 0) {
               succeedSpinner(currentSpinner, `Found ${pages_found} pages to scrape`)
               currentSpinner = null
-
-              console.log(`\n🔍 Scraping ${pages_found} pages...`)
               progressBar = new cliProgress.SingleBar(
                 {
-                  format: 'Scraping |{bar}| {value}/{total} pages | {files_created} files created',
+                  format: 'Scraping |{bar}| {value}/{total} pages',
                   barCompleteChar: '\u2588',
                   barIncompleteChar: '\u2591',
                   hideCursor: true,

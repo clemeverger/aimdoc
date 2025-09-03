@@ -1,7 +1,7 @@
 import chalk from 'chalk'
 import cliProgress from 'cli-progress'
 import { Command } from 'commander'
-import { AimdocAPI } from '../api'
+import { ensureApiConnection } from '../middleware/api-connection'
 import { formatFileSize, formatJobStatus, printError, printInfo } from '../utils'
 
 export function createStatusCommand(): Command {
@@ -13,7 +13,7 @@ export function createStatusCommand(): Command {
     .option('-v, --verbose', 'Show detailed information')
     .action(async (jobId: string, options) => {
       try {
-        const api = new AimdocAPI()
+        const api = await ensureApiConnection()
         const status = await api.getJobStatus(jobId)
 
         console.log(`\n${chalk.bold('Job Status')}`)

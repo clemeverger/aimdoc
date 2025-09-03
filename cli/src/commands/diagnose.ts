@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import { Command } from 'commander'
 import fs from 'fs-extra'
 import path from 'path'
-import { AimdocAPI } from '../api'
+import { ensureApiConnection } from '../middleware/api-connection'
 import { printError, printInfo } from '../utils'
 
 export function createDiagnoseCommand(): Command {
@@ -14,7 +14,7 @@ export function createDiagnoseCommand(): Command {
     .option('--verbose', 'Show detailed information about failed pages')
     .action(async (jobId: string, options) => {
       try {
-        const api = new AimdocAPI()
+        const api = await ensureApiConnection()
 
         // Get job status
         const job = await api.getJobStatus(jobId)

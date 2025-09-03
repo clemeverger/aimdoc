@@ -4,7 +4,7 @@ import * as fs from 'fs-extra'
 import inquirer from 'inquirer'
 import ora from 'ora'
 import * as path from 'path'
-import { AimdocAPI } from '../api'
+import { ensureApiConnection } from '../middleware/api-connection'
 import { printError, printInfo, printSuccess, sanitizeFilename, validateOutputDirectory } from '../utils'
 
 async function generateReadmeIndex(docsPath: string): Promise<void> {
@@ -68,7 +68,7 @@ export function createDownloadCommand(): Command {
     .action(async (jobId: string, options) => {
       const spinner = ora('Initializing download...').start()
       try {
-        const api = new AimdocAPI()
+        const api = await ensureApiConnection()
 
         // 1. Get job status to find the project name.
         spinner.text = 'Fetching job details...'

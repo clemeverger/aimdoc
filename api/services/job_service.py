@@ -526,50 +526,29 @@ class JobService:
         if not job_path.exists():
             return None
         
-        # The actual content is in a docs subdirectory named after the project
+        # The actual content is in the root docs directory named after the project
         project_name = job["request"].get("name", "default-project")
-        content_path = job_path / "docs" / project_name
-        
-        # Removed verbose logs during download phase
-        
-        # Check if the directory exists at the root of the project
         root_docs_path = Path(__file__).parent.parent.parent / "docs" / project_name
-        if root_docs_path.exists():
-            content_path = root_docs_path
         
-        # Check for new structure first
-        elif not content_path.exists():
-            # Fallback to old structure for compatibility
-            legacy_path = job_path / project_name
-            if legacy_path.exists():
-                content_path = legacy_path
-                return JobResults(job_id=job_id, status=job["status"], files=[], build_path=str(content_path), metadata=job.get("result_summary", {}))
+        # Only use root docs path
+        if not root_docs_path.exists():
+            return None
 
-        # List all files in docs directory
+        # List all files in the docs directory
         files = []
         try:
-            for file_path in content_path.glob("**/*"):
+            for file_path in root_docs_path.glob("**/*"):
                 if file_path.is_file():
-                    files.append(str(file_path.relative_to(content_path)))
-            # Removed verbose file counting logs
-            
-            if len(files) == 0:
-                # If no files found, try looking in the root docs directory
-                root_docs_path = Path(__file__).parent.parent.parent / "docs" / project_name
-                if root_docs_path.exists() and root_docs_path != content_path:
-                    content_path = root_docs_path
-                    for file_path in content_path.glob("**/*"):
-                        if file_path.is_file():
-                            files.append(str(file_path.relative_to(content_path)))
+                    files.append(str(file_path.relative_to(root_docs_path)))
         except Exception as e:
-            # Removed verbose error logs during download
+            # Handle any file system errors gracefully
             pass
         
         return JobResults(
             job_id=job_id,
             status=job["status"],
             files=files,
-            build_path=str(content_path),
+            build_path=str(root_docs_path),
             metadata=job.get("result_summary", {})
         )
     

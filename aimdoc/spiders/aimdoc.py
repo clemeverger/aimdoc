@@ -59,6 +59,9 @@ class AimdocSpider(scrapy.Spider):
         }
         
         # No custom rate limiting - use Scrapy defaults
+        
+        # Pre-compile regex patterns for performance optimization
+        self._whitespace_pattern = re.compile(r'\s+')
 
     def _generate_discovery_urls(self):
         """Generate discovery URLs from base URL"""
@@ -165,8 +168,10 @@ class AimdocSpider(scrapy.Spider):
             
             yield item
             
-            # Update progress after yielding item
-            self._update_scraped_progress()
+            # Track scraped pages using Scrapy stats instead of file I/O
+            self.pages_scraped_count += 1
+            if hasattr(self.crawler.stats, 'inc_value'):
+                self.crawler.stats.inc_value('pages_scraped')
         except Exception as e:
             error_info = {
                 'url': response.url,
@@ -321,29 +326,11 @@ class AimdocSpider(scrapy.Spider):
             # Store chapter information
             self.chapters = {name: len(urls) for name, urls in chapter_urls.items()}
             
-            # Write progress info for the backend to read
-            try:
-                import os
-                # Write progress file in the same directory as the manifest (job directory)
-                manifest_dir = os.path.dirname(self.manifest_path) if hasattr(self, 'manifest_path') else os.getcwd()
-                progress_file = os.path.join(manifest_dir, "progress.json")
-                progress_data = {
-                    "pages_found": urls_found,
-                    "pages_scraped": 0,
-                    "files_created": 0,
-                    "sitemap_processed": True
-                }
-                self.logger.info(f"DEBUG: About to write progress file to {progress_file}")
-                self.logger.info(f"DEBUG: Manifest path: {self.manifest_path}")
-                self.logger.info(f"DEBUG: Manifest dir: {manifest_dir}")
-                with open(progress_file, 'w', encoding='utf-8') as f:
-                    import json
-                    json.dump(progress_data, f, indent=2)
-                self.logger.info(f"✅ PROGRESS FILE WRITTEN: {progress_file} with {urls_found} pages found")
-            except Exception as e:
-                self.logger.error(f"❌ FAILED TO WRITE PROGRESS FILE: {e}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Store progress in Scrapy stats (non-blocking)
+            if hasattr(self.crawler.stats, 'set_value'):
+                self.crawler.stats.set_value('pages_found', urls_found)
+                self.crawler.stats.set_value('sitemap_processed', True)
+            self.logger.info(f"✅ SITEMAP PROCESSED: {urls_found} pages found")
             
             # Log detailed statistics with examples
             self.logger.info(f"=== SITEMAP PROCESSING COMPLETE ===")
@@ -496,37 +483,6 @@ class AimdocSpider(scrapy.Spider):
             self._scope_log_count += 1
         return url_is_doc
 
-    def _update_scraped_progress(self):
-        """Update progress file with scraped pages count"""
-        self.pages_scraped_count += 1
-        try:
-            import os
-            manifest_dir = os.path.dirname(self.manifest_path) if hasattr(self, 'manifest_path') else os.getcwd()
-            progress_file = os.path.join(manifest_dir, "progress.json")
-            
-            # Read existing progress file if it exists
-            progress_data = {
-                "pages_found": 0,
-                "pages_scraped": self.pages_scraped_count,
-                "files_created": 0,
-                "sitemap_processed": True
-            }
-            
-            if os.path.exists(progress_file):
-                try:
-                    with open(progress_file, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                        progress_data.update(existing_data)
-                        progress_data["pages_scraped"] = self.pages_scraped_count
-                except Exception:
-                    pass
-            
-            # Write updated progress
-            with open(progress_file, 'w', encoding='utf-8') as f:
-                json.dump(progress_data, f, indent=2)
-                
-        except Exception as e:
-            self.logger.warning(f"Failed to update progress: {e}")
 
     def _now(self):
         """Get current timestamp in ISO format"""
@@ -536,8 +492,8 @@ class AimdocSpider(scrapy.Spider):
         """Generate hash of HTML content for change detection"""
         if not html:
             return ""
-        # Normalize whitespace and generate hash
-        normalized = re.sub(r'\s+', ' ', html.strip())
+        # Normalize whitespace and generate hash (use pre-compiled regex)
+        normalized = self._whitespace_pattern.sub(' ', html.strip())
         return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
 
     def closed(self, reason):

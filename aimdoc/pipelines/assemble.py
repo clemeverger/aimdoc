@@ -4,18 +4,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 import re
-import sys
 
 class AssemblePipeline:
     """
-    A simplified pipeline to assemble markdown files into a clean directory structure.
-    It creates one folder per project and mirrors the URL path in the filesystem.
+    Optimized pipeline to assemble markdown files with streaming processing.
+    Processes pages immediately instead of accumulating in memory.
     """
 
     def __init__(self):
-        self.pages = []
+        # Store only minimal metadata instead of full pages
+        self.page_metadata = []
         self.output_dir = None
         self.files_created_count = 0
+        self.batch_size = 50  # Process pages in batches to manage memory
+        
+        # Pre-compile regex patterns for performance
+        self._docs_pattern = re.compile(r'(/docs/)(.*)', re.IGNORECASE)
 
     def open_spider(self, spider):
         """Initialize the pipeline and create the main output directory."""
@@ -40,53 +44,60 @@ class AssemblePipeline:
         spider.logger.info(f"Assembling documentation in: {self.output_dir}")
 
     def process_item(self, item, spider):
-        """Collect pages with markdown content."""
+        """Process pages immediately instead of accumulating in memory."""
         if item.get('md'):
-            self.pages.append(dict(item))
+            # Process the page immediately to save memory
+            self._process_page_immediately(item)
+            
+            # Store only minimal metadata for README generation
+            self.page_metadata.append({
+                'url': item['url'],
+                'title': item.get('title', 'Untitled'),
+                'order': item.get('order', 999)
+            })
         return item
+    
+    def _process_page_immediately(self, page):
+        """Process and write a single page to disk immediately."""
+        file_path = self._get_path_from_url(page['url'])
+        if not file_path:
+            return
+
+        target_path = self.output_dir / file_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        title = self._escape_yaml(page.get('title', 'Untitled'))
+        content = f'---\ntitle: "{title}"\nurl: {page["url"]}\n---\n\n{page["md"]}'
+
+        try:
+            with open(target_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            # Update file creation count using Scrapy stats instead of I/O
+            self.files_created_count += 1
+            if hasattr(self.spider.crawler.stats, 'inc_value'):
+                self.spider.crawler.stats.inc_value('files_created')
+        except OSError as e:
+            self.spider.logger.error(f"Failed to write file {target_path}: {e}")
 
     def close_spider(self, spider):
         """
-        Finalize the assembly process: write markdown files, a README,
-        and a sources.json metadata file.
+        Finalize the assembly process: generate README and sources.json.
+        Individual markdown files are already created during processing.
         """
-        if not self.pages:
+        if not self.page_metadata:
             spider.logger.warning("No pages with markdown content to assemble.")
             return
 
-        self.pages.sort(key=lambda p: (p.get('order', 999), p['url']))
+        # Sort metadata by order and URL 
+        self.page_metadata.sort(key=lambda p: (p.get('order', 999), p['url']))
 
-        self._generate_markdown_files()
+        # Generate final files
         self._generate_readme()
         self._generate_sources_json()
 
-        spider.logger.info(f"Assembly complete. Generated {len(self.pages)} files.")
+        spider.logger.info(f"Assembly complete. Generated {len(self.page_metadata)} files.")
 
 
-    def _generate_markdown_files(self):
-        """
-        Create a markdown file for each scraped page, mirroring the URL structure.
-        """
-        for page in self.pages:
-            file_path = self._get_path_from_url(page['url'])
-            if not file_path:
-                continue
-
-            target_path = self.output_dir / file_path
-
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-
-            title = self._escape_yaml(page.get('title', 'Untitled'))
-            content = f'---\ntitle: "{title}"\nurl: {page["url"]}\n---\n\n{page["md"]}'
-
-            try:
-                with open(target_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                # Update file creation progress
-                self.files_created_count += 1
-                self._update_file_progress()
-            except OSError as e:
-                self.spider.logger.error(f"Failed to write file {target_path}: {e}")
 
 
     def _get_path_from_url(self, url: str) -> Path | None:
@@ -97,8 +108,8 @@ class AssemblePipeline:
         parsed_url = urlparse(url)
         path_str = parsed_url.path
         
-        # Find the '/docs/' segment and take everything after it.
-        match = re.search(r'(/docs/)(.*)', path_str, re.IGNORECASE)
+        # Find the '/docs/' segment and take everything after it (use pre-compiled regex).
+        match = self._docs_pattern.search(path_str)
         if not match:
             self.spider.logger.warning(f"URL '{url}' does not contain '/docs/' segment. Skipping.")
             return None
@@ -124,7 +135,7 @@ class AssemblePipeline:
         content = f"# {self.manifest.get('name', 'Documentation')}\n\n"
         content += "## All Pages\n\n"
 
-        for page in self.pages:
+        for page in self.page_metadata:
             file_path = self._get_path_from_url(page['url'])
             if file_path:
                 title = page.get('title', str(file_path))
@@ -146,9 +157,9 @@ class AssemblePipeline:
                 'url': page['url'],
                 'title': page.get('title', ''),
                 'order': page.get('order', 999),
-                'fetched_at': page.get('fetched_at', ''),
+                'fetched_at': '',  # No longer storing full page data
             }
-            for page in self.pages
+            for page in self.page_metadata
         ]
 
         sources_path = self.output_dir / 'sources.json'
@@ -172,37 +183,3 @@ class AssemblePipeline:
             return ''
         return text.replace('"', '\\"')
 
-    def _update_file_progress(self):
-        """Update progress file with files created count"""
-        try:
-            import json
-            manifest_path = getattr(self.spider, 'manifest_path', None)
-            if not manifest_path:
-                return
-                
-            manifest_dir = os.path.dirname(manifest_path)
-            progress_file = os.path.join(manifest_dir, "progress.json")
-            
-            # Read existing progress file
-            progress_data = {
-                "pages_found": 0,
-                "pages_scraped": 0,
-                "files_created": self.files_created_count,
-                "sitemap_processed": True
-            }
-            
-            if os.path.exists(progress_file):
-                try:
-                    with open(progress_file, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                        progress_data.update(existing_data)
-                        progress_data["files_created"] = self.files_created_count
-                except Exception:
-                    pass
-            
-            # Write updated progress
-            with open(progress_file, 'w', encoding='utf-8') as f:
-                json.dump(progress_data, f, indent=2)
-                
-        except Exception as e:
-            self.spider.logger.warning(f"Failed to update file progress: {e}")

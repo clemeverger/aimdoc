@@ -11,8 +11,8 @@ DOWNLOADER_MIDDLEWARES = {}
 
 # Configure item pipelines
 ITEM_PIPELINES = {
-    'aimdoc.pipelines.clean_html.CleanHtmlPipeline': 100,
-    'aimdoc.pipelines.markdown.HtmlToMarkdownPipeline': 200,
+    'aimdoc.pipelines.optimized_html_markdown.OptimizedHtmlMarkdownPipeline': 150,
+    'aimdoc.pipelines.progress_tracker.ProgressTrackerPipeline': 250,  # Before AssemblePipeline
     'aimdoc.pipelines.assemble.AssemblePipeline': 300,
     'aimdoc.pipelines.diff.DiffPipeline': 400,
 }
@@ -24,16 +24,16 @@ HTTPCACHE_DIR = 'httpcache'
 HTTPCACHE_IGNORE_HTTP_CODES = [301, 302, 303, 304, 307, 308]
 HTTPCACHE_STORAGE = 'scrapy.extensions.httpcache.FilesystemCacheStorage'
 
-# Enable AutoThrottle
+# Enable AutoThrottle with optimized settings
 AUTOTHROTTLE_ENABLED = True
-AUTOTHROTTLE_START_DELAY = 1
-AUTOTHROTTLE_MAX_DELAY = 10
-AUTOTHROTTLE_TARGET_CONCURRENCY = 2.0
+AUTOTHROTTLE_START_DELAY = 0.5  # Reduced from 1 second
+AUTOTHROTTLE_MAX_DELAY = 5      # Reduced from 10 seconds  
+AUTOTHROTTLE_TARGET_CONCURRENCY = 4.0  # Increased from 2.0
 AUTOTHROTTLE_DEBUG = False
 
-# Set default concurrent requests
-CONCURRENT_REQUESTS = 8
-CONCURRENT_REQUESTS_PER_DOMAIN = 4
+# Increase concurrent requests for better performance
+CONCURRENT_REQUESTS = 16        # Increased from 8
+CONCURRENT_REQUESTS_PER_DOMAIN = 8  # Increased from 4
 
 # Deltafetch middleware not implemented - disabled
 DELTAFETCH_ENABLED = False
@@ -41,9 +41,9 @@ DELTAFETCH_ENABLED = False
 # Configure user agent
 USER_AGENT = 'aimdoc (+https://github.com/your-org/aimdoc)'
 
-# Set download delay
-DOWNLOAD_DELAY = 0.5
-RANDOMIZE_DOWNLOAD_DELAY = 0.5
+# Optimized download delay for faster scraping
+DOWNLOAD_DELAY = 0.25           # Reduced from 0.5
+RANDOMIZE_DOWNLOAD_DELAY = 0.25 # Reduced from 0.5
 
 # Configure feeds - disabled, handled by AssemblePipeline
 FEEDS = {}

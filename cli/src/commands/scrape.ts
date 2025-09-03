@@ -1,86 +1,71 @@
-import { Command } from 'commander';
-import inquirer from 'inquirer';
-import ora from 'ora';
-import chalk from 'chalk';
-import path from 'path';
-import fs from 'fs-extra';
-import WebSocket from 'ws';
-import { AimdocAPI } from '../api';
-import { ScrapeRequest, JobStatus, WebSocketJobUpdate } from '../types';
-import { isValidUrl, formatJobStatus, printError, printSuccess, printInfo } from '../utils';
+import chalk from 'chalk'
+import { Command } from 'commander'
+import fs from 'fs-extra'
+import inquirer from 'inquirer'
+import ora from 'ora'
+import path from 'path'
+import WebSocket from 'ws'
+import { AimdocAPI } from '../api'
+import { JobStatus, ScrapeRequest, WebSocketJobUpdate } from '../types'
+import { extractDomainName, isValidUrl, printError, printInfo, printSuccess, validateOutputDirectory } from '../utils'
 
 export function createScrapeCommand(): Command {
-  const scrapeCommand = new Command('scrape');
-  
+  const scrapeCommand = new Command('scrape')
+
   scrapeCommand
     .description('Start a new documentation scraping job')
     .argument('[url]', 'URL of the documentation site to scrape')
-    .option('-n, --name <name>', 'Project name')
-    .option('-m, --mode <mode>', 'Output mode (bundle|single)', 'bundle')
-    .option('--no-wait', 'Don\'t wait for job completion (just create and exit)')
-    .option('--no-progress', 'Disable progress monitoring')
-    .option('--no-auto-download', 'Disable automatic download of results')
-    .option('-o, --output <dir>', 'Output directory for downloaded results', '.')
+    .option('-n, --name <name>', 'Project name (defaults to the domain name)')
+    .option('-o, --output-dir <dir>', 'Output directory for the documentation', './docs')
     .action(async (url: string | undefined, options) => {
       try {
-        const api = new AimdocAPI();
-        
-        // Health check
-        const spinner = ora('Connecting to API...').start();
-        const isHealthy = await api.healthCheck();
-        
-        if (!isHealthy) {
-          spinner.fail('API is not available. Make sure the server is running.');
-          process.exit(1);
-        }
-        spinner.succeed('Connected to API');
-        
-        // Get scrape parameters
-        const scrapeRequest = await getScrapeRequest(url, options);
-        
-        // Create job
-        const createSpinner = ora('Creating scrape job...').start();
-        const job = await api.createScrapeJob(scrapeRequest);
-        createSpinner.succeed(`Job created: ${chalk.bold(job.job_id)}`);
-        
-        printInfo(`Job URL: ${chalk.underline(`http://localhost:8000/docs#/jobs/get_job_status_api_v1_jobs__job_id__get`)}`);
-        
-        if (!options.noWait) {
-          await waitForCompletionWithWebSocket(
-            api, 
-            job.job_id, 
-            scrapeRequest.name,
-            !options.noProgress,
-            !options.noAutoDownload,
-            options.output
-          );
-        } else {
-          printInfo(`Use ${chalk.bold(`aimdoc status ${job.job_id}`)} to check progress`);
-          printInfo(`Use ${chalk.bold(`aimdoc download ${job.job_id}`)} to download results when complete`);
-        }
-        
-      } catch (error) {
-        console.error('Detailed error:', error);
-        printError('Failed to create scrape job', error as Error);
-        process.exit(1);
-      }
-    });
+        const api = new AimdocAPI()
 
-  return scrapeCommand;
+        // Health check
+        const spinner = ora('Connecting to API...').start()
+        const isHealthy = await api.healthCheck()
+
+        if (!isHealthy) {
+          spinner.fail('API is not available. Make sure the server is running.')
+          process.exit(1)
+        }
+        spinner.succeed('Connected to API')
+
+        // Get scrape parameters
+        const scrapeRequest = await getScrapeRequest(url, options)
+
+        // Get output directory
+        const outputDir = await getOutputDirectory(options)
+        const folderName = scrapeRequest.name // Use project name as folder name
+
+        // Create job
+        const createSpinner = ora('Creating scrape job...').start()
+        const job = await api.createScrapeJob(scrapeRequest)
+        createSpinner.succeed(`Job created: ${chalk.bold(job.job_id)}`)
+
+        printInfo(`Job details can be found at: ${chalk.underline(`http://localhost:8000/docs#/jobs/get_job_status_api_v1_jobs__job_id__get`)}`)
+
+        // Wait for job completion and download results
+        await waitForCompletionWithWebSocket(api, job.job_id, scrapeRequest.name, outputDir, folderName)
+      } catch (error) {
+        console.error('Detailed error:', error)
+        printError('Failed to create scrape job', error as Error)
+        process.exit(1)
+      }
+    })
+
+  return scrapeCommand
 }
 
 async function getScrapeRequest(url: string | undefined, options: any): Promise<ScrapeRequest> {
-  const request: ScrapeRequest = {
-    name: '',
-    url: ''
-  };
-  
+  const request: Partial<ScrapeRequest> = {}
+
   // Get URL
   if (url) {
     if (!isValidUrl(url)) {
-      throw new Error(`Invalid URL: ${url}`);
+      throw new Error(`Invalid URL: ${url}`)
     }
-    request.url = url;
+    request.url = url
   } else {
     const urlAnswer = await inquirer.prompt([
       {
@@ -88,193 +73,302 @@ async function getScrapeRequest(url: string | undefined, options: any): Promise<
         name: 'url',
         message: 'Documentation URL:',
         validate: (input: string) => {
-          if (!input.trim()) return 'URL is required';
-          if (!isValidUrl(input)) return 'Please enter a valid URL';
-          return true;
-        }
-      }
-    ]);
-    request.url = urlAnswer.url;
+          if (!input.trim()) return 'URL is required'
+          if (!isValidUrl(input)) return 'Please enter a valid URL'
+          return true
+        },
+      },
+    ])
+    request.url = urlAnswer.url
   }
-  
+
   // Get name
   if (options.name) {
-    request.name = options.name;
+    request.name = options.name
   } else {
-    const defaultName = new URL(request.url).hostname.replace(/^www\./, '');
+    const defaultName = extractDomainName(request.url!)
     const nameAnswer = await inquirer.prompt([
       {
         type: 'input',
         name: 'name',
         message: 'Project name:',
         default: defaultName,
-        validate: (input: string) => input.trim() ? true : 'Project name is required'
-      }
-    ]);
-    request.name = nameAnswer.name;
+        validate: (input: string) => (input.trim() ? true : 'Project name is required'),
+      },
+    ])
+    request.name = nameAnswer.name
   }
-  
-  // Set mode
-  if (options.mode && ['bundle', 'single'].includes(options.mode)) {
-    request.output_mode = options.mode as 'bundle' | 'single';
-  }
-  
-  return request;
+
+  // MVP mode is always 'bundle' which is the default on the backend. No need to set it.
+
+  return request as ScrapeRequest
 }
 
-async function waitForCompletionWithWebSocket(
-  api: AimdocAPI, 
-  jobId: string, 
-  projectName: string,
-  showProgress: boolean, 
-  autoDownload: boolean,
-  outputDir: string
-): Promise<void> {
-  const spinner = showProgress ? ora('Connecting to job...').start() : null;
-  let ws: WebSocket | null = null;
+async function getOutputDirectory(options: any): Promise<string> {
+  let outputDir = options.outputDir
+
+  const dirAnswer = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'outputDir',
+      message: 'Output directory:',
+      default: outputDir || './docs',
+      validate: async (input: string) => {
+        if (!input.trim()) return 'Output directory is required'
+        const isValid = await validateOutputDirectory(input)
+        return isValid ? true : 'Directory is not writable or cannot be created'
+      },
+    },
+  ])
+  outputDir = dirAnswer.outputDir
+
+  // Validate the provided directory
+  const isValid = await validateOutputDirectory(outputDir)
+  if (!isValid) {
+    printError(`Directory '${outputDir}' is not writable or cannot be created`)
+    process.exit(1)
+  }
+
+  return outputDir
+}
+
+async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
+  const spinner = ora('Connecting to job...').start()
+  let ws: WebSocket | null = null
 
   try {
     ws = await api.connectToJobWebSocket(
       jobId,
       async (update: WebSocketJobUpdate) => {
         if (update.type === 'status_update') {
-          if (showProgress && spinner) {
-            let message = update.message || 'Processing...';
-            
+          if (spinner) {
+            let message = update.message || 'Processing...'
+
             if (update.progress) {
-              const { pages_found = 0, pages_scraped = 0, files_created = 0 } = update.progress;
+              const { pages_found = 0, pages_scraped = 0, files_created = 0 } = update.progress
               if (pages_found > 0 || pages_scraped > 0 || files_created > 0) {
-                message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`;
+                message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`
               }
             }
-            
-            spinner.text = message;
+
+            spinner.text = message
           }
 
           if (update.status === JobStatus.COMPLETED) {
-            if (spinner) spinner.succeed('Scraping completed successfully!');
-            
+            if (spinner) spinner.succeed('Scraping completed successfully!')
+
             if (update.result_summary) {
-              printSuccess(`Created ${update.result_summary.files_created} files from ${update.progress?.pages_scraped || 0} pages`);
+              printSuccess(`Created ${update.result_summary.files_created} files from ${update.progress?.pages_scraped || 0} pages`)
             }
 
-            // Auto-download results if enabled
-            if (autoDownload) {
-              await downloadResults(api, jobId, projectName, outputDir);
-            } else {
-              printInfo(`Use ${chalk.bold(`aimdoc download ${jobId}`)} to download the results`);
-            }
-            
-            ws?.close();
+            // Auto-download results
+            await downloadResults(api, jobId, projectName, outputDir, folderName)
+
+            ws?.close()
           } else if (update.status === JobStatus.FAILED) {
-            if (spinner) spinner.fail('Scraping failed');
-            printError(update.error || update.message || 'Job failed with unknown error');
-            ws?.close();
-            process.exit(1);
+            if (spinner) spinner.fail('Scraping failed')
+            printError(update.error || update.message || 'Job failed with unknown error')
+            ws?.close()
+            process.exit(1)
           }
         }
       },
       (error: Error) => {
-        console.log('WebSocket error, falling back to polling...');
+        console.log('WebSocket error, falling back to polling...')
         // Don't exit, let it fall through to fallback
       },
       () => {
         // WebSocket closed
       }
-    );
+    )
 
-    if (spinner) spinner.text = 'Connected! Starting scrape...';
-
+    if (spinner) spinner.text = 'Connected! Starting scrape...'
   } catch (error) {
     // Fallback to polling if WebSocket fails
     if (spinner) {
-      spinner.text = 'WebSocket unavailable, falling back to polling...';
+      spinner.text = 'WebSocket unavailable, falling back to polling...'
     }
-    await waitForCompletionFallback(api, jobId, projectName, showProgress, autoDownload, outputDir);
+    await waitForCompletionFallback(api, jobId, projectName, outputDir, folderName)
   }
 }
 
-async function downloadResults(api: AimdocAPI, jobId: string, projectName: string, outputDir: string): Promise<void> {
-  const downloadSpinner = ora('Downloading results...').start();
-  
+async function downloadResults(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
+  const downloadSpinner = ora('Downloading results...').start()
+
   try {
-    const outputPath = path.join(outputDir, `${projectName}-results.zip`);
-    await fs.ensureDir(path.dirname(outputPath));
-    
-    await api.downloadJobZip(jobId, outputPath);
-    
-    downloadSpinner.succeed(`Results downloaded to: ${chalk.underline(outputPath)}`);
-    printInfo(`Extract with: ${chalk.bold(`unzip "${outputPath}"`)}`);
+    // Create the final directory
+    const finalDir = path.join(outputDir, folderName)
+    await fs.ensureDir(finalDir)
+
+    // Download files directly
+    downloadSpinner.text = 'Getting file list...'
+
+    // Get list of files
+    const results = await api.getJobResults(jobId)
+
+    if (results.files.length === 0) {
+      downloadSpinner.warn('No files to download')
+      return
+    }
+
+    downloadSpinner.text = `Downloading ${results.files.length} files...`
+
+    // Track what we've downloaded
+    let downloadedCount = 0
+    const downloadedDirs = new Set<string>()
+
+    // Download each file individually
+    for (const filePath of results.files) {
+      try {
+        // Download file content
+        const fileData = await api.downloadFile(jobId, filePath)
+
+        // Determine target path
+        const targetPath = path.join(finalDir, filePath)
+
+        // Ensure directory exists
+        const targetDir = path.dirname(targetPath)
+        if (!downloadedDirs.has(targetDir)) {
+          await fs.ensureDir(targetDir)
+          downloadedDirs.add(targetDir)
+        }
+
+        // Write file
+        await fs.writeFile(targetPath, fileData)
+        downloadedCount++
+
+        downloadSpinner.text = `Downloaded ${downloadedCount}/${results.files.length} files...`
+      } catch (error) {
+        console.warn(`Failed to download ${filePath}: ${(error as Error).message}`)
+      }
+    }
+
+    if (downloadedCount === results.files.length) {
+      downloadSpinner.succeed(`Downloaded all ${downloadedCount} files`)
+    } else {
+      downloadSpinner.warn(`Downloaded ${downloadedCount}/${results.files.length} files (some failed)`)
+    }
+
+    printSuccess(`Documentation organized in: ${chalk.underline(finalDir)}`)
+
+    // Generate README index
+    await generateReadmeIndex(finalDir)
   } catch (error) {
-    downloadSpinner.fail('Failed to download results');
-    printError('Download error', error as Error);
-    printInfo(`You can try downloading manually: ${chalk.bold(`aimdoc download ${jobId}`)}`);
+    downloadSpinner.fail('Failed to download results')
+    printError('Download error', error as Error)
+    printInfo(`You can try downloading manually: ${chalk.bold(`aimdoc download ${jobId}`)}`)
   }
 }
 
-async function waitForCompletionFallback(
-  api: AimdocAPI, 
-  jobId: string, 
-  projectName: string,
-  showProgress: boolean, 
-  autoDownload: boolean,
-  outputDir: string
-): Promise<void> {
-  const spinner = showProgress ? ora('Starting scrape...').start() : null;
-  
-  let lastStatus: JobStatus | null = null;
-  let lastProgress: any = null;
-  
+async function generateReadmeIndex(docsPath: string): Promise<void> {
+  try {
+    const readmePath = path.join(docsPath, 'README.md')
+
+    // Get all markdown files recursively
+    const getAllMdFiles = async (dir: string, relativePath = ''): Promise<string[]> => {
+      const files: string[] = []
+      const entries = await fs.readdir(dir, { withFileTypes: true })
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const subFiles = await getAllMdFiles(path.join(dir, entry.name), path.join(relativePath, entry.name))
+          files.push(...subFiles)
+        } else if (entry.name.endsWith('.md') && entry.name !== 'README.md') {
+          files.push(path.join(relativePath, entry.name))
+        }
+      }
+      return files
+    }
+
+    const mdFiles = await getAllMdFiles(docsPath)
+
+    // Group files by directory
+    const structure: Record<string, string[]> = {}
+    mdFiles.forEach((file) => {
+      const dir = path.dirname(file)
+      if (!structure[dir]) structure[dir] = []
+      structure[dir].push(path.basename(file, '.md'))
+    })
+
+    // Generate README content
+    const readmeContent = `# Documentation Index
+
+Generated on ${new Date().toISOString()}
+
+## Structure
+
+${Object.entries(structure)
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([dir, files]) => {
+    if (dir === '.') {
+      return files.map((file) => `- [${file}](./${file}.md)`).join('\n')
+    } else {
+      return `\n### ${dir}\n\n${files.map((file) => `- [${file}](./${dir}/${file}.md)`).join('\n')}`
+    }
+  })
+  .join('\n')}
+
+---
+*Generated with [aimdoc](https://github.com/anthropic/doc-pack)*
+`
+
+    await fs.writeFile(readmePath, readmeContent, 'utf-8')
+    printSuccess(`Generated README.md index with ${mdFiles.length} files`)
+  } catch (error) {
+    // Don't fail the whole process if README generation fails
+    console.warn('Warning: Could not generate README.md index')
+  }
+}
+
+async function waitForCompletionFallback(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {
+  const spinner = ora('Starting scrape...').start()
+
+  let lastStatus: JobStatus | null = null
+  let lastProgress: any = null
+
   while (true) {
     try {
-      const status = await api.getJobStatus(jobId);
-      
-      if (showProgress && spinner) {
-        if (status.status !== lastStatus || 
-            JSON.stringify(status.progress) !== JSON.stringify(lastProgress)) {
-          
-          let message = 'Processing...';
+      const status = await api.getJobStatus(jobId)
+
+      if (spinner) {
+        if (status.status !== lastStatus || JSON.stringify(status.progress) !== JSON.stringify(lastProgress)) {
+          let message = 'Processing...'
           if (status.progress) {
-            const { pages_found = 0, pages_scraped = 0, files_created = 0 } = status.progress;
+            const { pages_found = 0, pages_scraped = 0, files_created = 0 } = status.progress
             if (pages_found > 0) {
-              message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`;
+              message = `Found ${pages_found} pages, scraped ${pages_scraped}, created ${files_created} files`
             }
           }
-          
-          spinner.text = message;
-          lastStatus = status.status;
-          lastProgress = status.progress;
+
+          spinner.text = message
+          lastStatus = status.status
+          lastProgress = status.progress
         }
       }
-      
+
       if (status.status === JobStatus.COMPLETED) {
-        if (spinner) spinner.succeed('Scraping completed successfully!');
-        
+        if (spinner) spinner.succeed('Scraping completed successfully!')
+
         if (status.result_summary) {
-          printSuccess(`Created ${status.result_summary.files_created} files`);
+          printSuccess(`Created ${status.result_summary.files_created} files`)
         }
-        
-        if (autoDownload) {
-          await downloadResults(api, jobId, projectName, outputDir);
-        } else {
-          printInfo(`Use ${chalk.bold(`aimdoc download ${jobId}`)} to download the results`);
-        }
-        break;
+
+        await downloadResults(api, jobId, projectName, outputDir, folderName)
+        break
       }
-      
+
       if (status.status === JobStatus.FAILED) {
-        if (spinner) spinner.fail('Scraping failed');
-        printError(status.error_message || 'Job failed with unknown error');
-        process.exit(1);
+        if (spinner) spinner.fail('Scraping failed')
+        printError(status.error_message || 'Job failed with unknown error')
+        process.exit(1)
       }
-      
+
       // Wait before checking again
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+      await new Promise((resolve) => setTimeout(resolve, 2000))
     } catch (error) {
-      if (spinner) spinner.fail('Error checking job status');
-      printError('Failed to check job status', error as Error);
-      process.exit(1);
+      if (spinner) spinner.fail('Error checking job status')
+      printError('Failed to check job status', error as Error)
+      process.exit(1)
     }
   }
 }

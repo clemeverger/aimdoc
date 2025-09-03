@@ -42,10 +42,8 @@ class JobService:
         manifest_data = {
             "name": request.name,
             "url": str(request.url),
+            "output": {"mode": "bundle"}  # Always use bundle mode
         }
-        
-        if request.output_mode:
-            manifest_data["output"] = {"mode": request.output_mode}
         
         manifest_path = job_dir / "manifest.json"
         with open(manifest_path, 'w', encoding='utf-8') as f:
@@ -59,7 +57,6 @@ class JobService:
             "request": request.dict(),
             "manifest_path": str(manifest_path),
             "job_dir": str(job_dir),
-            "build_dir": str(job_dir / "build"),
             "progress": {"pages_found": 0, "pages_scraped": 0, "files_created": 0}
         }
         
@@ -114,20 +111,23 @@ class JobService:
                 "progress": job.get("progress", {})
             })
             
-            # Change to job directory
+            # Get paths
             original_cwd = os.getcwd()
+            job_dir = job["job_dir"]
             print(f"[{datetime.now()}] RUN_SCRAPY: Original CWD: {original_cwd}")
-            print(f"[{datetime.now()}] RUN_SCRAPY: Job dir: {job['job_dir']}")
-            os.chdir(job["job_dir"])
+            print(f"[{datetime.now()}] RUN_SCRAPY: Job dir: {job_dir}")
+            
+            # Change to job directory - this ensures that the docs folder is created in the job directory
+            os.chdir(job_dir)
             
             # Run scrapy command
             cmd = [
                 "scrapy", "crawl", "aimdoc", 
                 "-a", f"manifest={job['manifest_path']}",
-                "-o", f"{job['build_dir']}/items.json"
+                "-o", f"{job_dir}/items.json"
             ]
             print(f"[{datetime.now()}] RUN_SCRAPY: Command to run: {' '.join(cmd)}")
-            print(f"[{datetime.now()}] RUN_SCRAPY: Build dir: {job['build_dir']}")
+            print(f"[{datetime.now()}] RUN_SCRAPY: Job dir: {job['job_dir']}")
             print(f"[{datetime.now()}] RUN_SCRAPY: Manifest path: {job['manifest_path']}")
             
             print(f"[{datetime.now()}] RUN_SCRAPY: Creating subprocess...")
@@ -149,8 +149,8 @@ class JobService:
             print(f"[{datetime.now()}] RUN_SCRAPY: Process finished with return code: {return_code}")
             
             # Update job status based on scraped content first, then return code
-            build_path = Path(job["build_dir"])
-            items_file = build_path / "items.json"
+            job_path = Path(job["job_dir"])
+            items_file = job_path / "items.json"
             
             scraped_items = 0
             if items_file.exists():
@@ -168,10 +168,26 @@ class JobService:
                 job["completed_at"] = datetime.now()
                 
                 # Count all files created
-                if build_path.exists():
-                    files = list(build_path.glob("**/*"))
-                    file_count = len([f for f in files if f.is_file()])
-                    total_size = sum(f.stat().st_size for f in files if f.is_file())
+                if job_path.exists():
+                    # The actual content is in a docs subdirectory named after the project
+                    project_name = job["request"].get("name", "default-project")
+                    content_path = job_path / "docs" / project_name
+                    
+                    # Check for new structure first
+                    if content_path.exists():
+                        files = list(content_path.glob("**/*"))
+                        file_count = len([f for f in files if f.is_file()])
+                        total_size = sum(f.stat().st_size for f in files if f.is_file())
+                    else:
+                        # Fallback to old structure for compatibility
+                        legacy_path = job_path / project_name
+                        if legacy_path.exists():
+                            files = list(legacy_path.glob("**/*"))
+                            file_count = len([f for f in files if f.is_file()])
+                            total_size = sum(f.stat().st_size for f in files if f.is_file())
+                        else:
+                            file_count = 0
+                            total_size = 0
                 else:
                     file_count = 0
                     total_size = 0
@@ -180,7 +196,7 @@ class JobService:
                     "files_created": file_count,
                     "pages_scraped": scraped_items,
                     "build_size": total_size,
-                    "build_path": str(build_path)
+                    "build_path": str(job_path)
                 }
                 job["progress"]["pages_scraped"] = scraped_items
                 job["progress"]["files_created"] = file_count
@@ -288,7 +304,8 @@ class JobService:
             completed_at=job.get("completed_at"),
             progress=job.get("progress"),
             error_message=job.get("error_message"),
-            result_summary=job.get("result_summary")
+            result_summary=job.get("result_summary"),
+            request=job.get("request")
         )
     
     def list_jobs(self, limit: Optional[int] = None) -> List[JobStatusResponse]:
@@ -311,21 +328,63 @@ class JobService:
         if job["status"] != JobStatus.COMPLETED:
             return None
         
-        build_path = Path(job["build_dir"])
-        if not build_path.exists():
+        job_path = Path(job["job_dir"])
+        if not job_path.exists():
             return None
         
-        # List all files in build directory
+        # The actual content is in a docs subdirectory named after the project
+        project_name = job["request"].get("name", "default-project")
+        content_path = job_path / "docs" / project_name
+        
+        print(f"Looking for files in: {content_path}")
+        print(f"Job path: {job_path}")
+        print(f"Project name: {project_name}")
+        
+        # Check if the directory exists at the root of the project
+        root_docs_path = Path(__file__).parent.parent.parent / "docs" / project_name
+        if root_docs_path.exists():
+            print(f"Found files in root docs directory: {root_docs_path}")
+            content_path = root_docs_path
+        
+        # Check for new structure first
+        elif not content_path.exists():
+            print(f"Content path {content_path} does not exist")
+            # Fallback to old structure for compatibility
+            legacy_path = job_path / project_name
+            print(f"Checking legacy path: {legacy_path}")
+            if legacy_path.exists():
+                print(f"Using legacy path: {legacy_path}")
+                content_path = legacy_path
+            else:
+                print(f"No files found in any location")
+                return JobResults(job_id=job_id, status=job["status"], files=[], build_path=str(content_path), metadata=job.get("result_summary", {}))
+
+        # List all files in docs directory
         files = []
-        for file_path in build_path.glob("**/*"):
-            if file_path.is_file():
-                files.append(str(file_path.relative_to(build_path)))
+        try:
+            for file_path in content_path.glob("**/*"):
+                if file_path.is_file():
+                    files.append(str(file_path.relative_to(content_path)))
+            print(f"Found {len(files)} files in {content_path}")
+            
+            if len(files) == 0:
+                # If no files found, try looking in the root docs directory
+                root_docs_path = Path(__file__).parent.parent.parent / "docs" / project_name
+                if root_docs_path.exists() and root_docs_path != content_path:
+                    print(f"No files found in job directory, trying root docs directory: {root_docs_path}")
+                    content_path = root_docs_path
+                    for file_path in content_path.glob("**/*"):
+                        if file_path.is_file():
+                            files.append(str(file_path.relative_to(content_path)))
+                    print(f"Found {len(files)} files in root docs directory")
+        except Exception as e:
+            print(f"Error listing files in {content_path}: {e}")
         
         return JobResults(
             job_id=job_id,
             status=job["status"],
             files=files,
-            build_path=str(build_path),
+            build_path=str(content_path),
             metadata=job.get("result_summary", {})
         )
     
@@ -388,17 +447,30 @@ class JobService:
         if job["status"] != JobStatus.COMPLETED:
             return None
         
-        build_path = Path(job["build_dir"])
-        if not build_path.exists():
+        job_path = Path(job["job_dir"])
+        if not job_path.exists():
             return None
         
+        # The actual content is in a docs subdirectory named after the project
+        project_name = job["request"].get("name", "default-project")
+        content_path = job_path / "docs" / project_name
+        
+        # Check for new structure first
+        if not content_path.exists():
+            # Fallback to old structure for compatibility
+            legacy_path = job_path / project_name
+            if legacy_path.exists():
+                content_path = legacy_path
+            else:
+                return None
+
         # Create ZIP file
-        zip_path = build_path.parent / f"{job['request']['name']}-results.zip"
+        zip_path = job_path / f"{job['request']['name']}-results.zip"
         
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for file_path in build_path.glob("**/*"):
+            for file_path in content_path.glob("**/*"):
                 if file_path.is_file():
-                    arcname = file_path.relative_to(build_path)
+                    arcname = file_path.relative_to(content_path)
                     zipf.write(file_path, arcname)
         
         return str(zip_path)

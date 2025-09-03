@@ -409,26 +409,9 @@ class AimdocSpider(scrapy.Spider):
     
     def _is_documentation_url(self, url):
         """Check if URL looks like documentation"""
-        doc_patterns = [
-            '/docs/', '/documentation/', '/guide/', '/guides/',
-            '/api/', '/reference/', '/manual/', '/help/',
-            '/tutorial/', '/tutorials/', '/learn/', '/getting-started/'
-        ]
         
-        url_lower = url.lower()
-        has_doc_pattern = any(pattern in url_lower for pattern in doc_patterns)
-        
-        # Add detailed logging for debugging - but only for first few URLs
-        if not hasattr(self, '_doc_url_log_count'):
-            self._doc_url_log_count = 0
-        
-        if self._doc_url_log_count < 10:  # Log first 10 URL checks
-            self.logger.info(f"_is_documentation_url({url}) -> {has_doc_pattern}")
-            if not has_doc_pattern:
-                self.logger.info(f"  No match for patterns: {doc_patterns}")
-            self._doc_url_log_count += 1
-        
-        return has_doc_pattern
+        # We are only interested in URLs that contain '/docs/'
+        return '/docs/' in url.lower()
 
     def _in_scope(self, url):
         """Check if URL is within the defined scope (auto-generated from base URL)"""
@@ -443,18 +426,11 @@ class AimdocSpider(scrapy.Spider):
                 self._scope_log_count += 1
             return False
             
-        # If the base URL itself contains documentation patterns, accept all URLs under it
-        base_is_doc = self._is_documentation_url(self.base_url)
-        if base_is_doc:
-            if self._scope_log_count < 10:
-                self.logger.info(f"_in_scope({url}) -> True (base URL is doc URL)")
-                self._scope_log_count += 1
-            return True
-            
-        # Otherwise, check if the specific URL is a documentation URL
+        # For this simplified spider, the only scope rule is that it must be a doc URL.
+        # The base URL itself doesn't have to be a doc URL, but the target URL must be.
         url_is_doc = self._is_documentation_url(url)
         if self._scope_log_count < 10:
-            self.logger.info(f"_in_scope({url}) -> {url_is_doc} (URL doc check)")
+            self.logger.info(f"_in_scope({url}) -> {url_is_doc} (URL contains '/docs/')")
             self._scope_log_count += 1
         return url_is_doc
 

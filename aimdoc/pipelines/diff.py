@@ -10,8 +10,6 @@ class DiffPipeline:
     """Pipeline to track changes and generate changelog.md per domain"""
     
     def __init__(self):
-        self.build_dir = Path('build')
-        
         self.current_sources_by_domain = {}  # domain -> {url: item}
         self.previous_sources_by_domain = {}  # domain -> {url: item}
         self.changes_by_domain = {}  # domain -> changes dict
@@ -20,24 +18,9 @@ class DiffPipeline:
         """Load previous sources data if available for each domain"""
         self.spider = spider
         
-        # Load previous sources data for each domain
-        for domain_dir in self.build_dir.iterdir():
-            if domain_dir.is_dir():
-                domain = domain_dir.name
-                sources_file = domain_dir / 'sources.json'
-                
-                if sources_file.exists():
-                    try:
-                        with open(sources_file, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            if 'sources' in data:
-                                self.previous_sources_by_domain[domain] = {
-                                    source['url']: source 
-                                    for source in data['sources']
-                                }
-                                spider.logger.info(f"Loaded {len(self.previous_sources_by_domain[domain])} previous sources for domain {domain}")
-                    except (json.JSONDecodeError, FileNotFoundError) as e:
-                        spider.logger.warning(f"Could not load previous sources for {domain}: {e}")
+        # No need to load previous sources data for now
+        # We'll just track the current sources
+        spider.logger.info("Diff pipeline initialized - tracking current sources only")
 
     def process_item(self, item, spider):
         """Track current items for comparison by domain"""
@@ -185,39 +168,9 @@ class DiffPipeline:
     def _generate_changelog_for_domain(self, domain):
         """Generate changelog.md for a specific domain"""
         
-        domain_dir = self.build_dir / domain
-        domain_dir.mkdir(parents=True, exist_ok=True)
-        changelog_file = domain_dir / 'changelog.md'
-        
+        # For now, we'll just log the changes instead of writing to a file
         changelog_content = self._build_changelog_content_for_domain(domain)
-        
-        # Read existing changelog if it exists
-        existing_changelog = ''
-        if changelog_file.exists():
-            try:
-                with open(changelog_file, 'r', encoding='utf-8') as f:
-                    existing_content = f.read()
-                    # Keep everything after the first entry
-                    lines = existing_content.split('\n')
-                    if len(lines) > 10:  # Skip header and first entry
-                        # Find the next version marker
-                        for i, line in enumerate(lines[10:], 10):
-                            if line.startswith('## '):
-                                existing_changelog = '\n'.join(lines[i:])
-                                break
-            except Exception as e:
-                self.spider.logger.warning(f"Could not read existing changelog for {domain}: {e}")
-        
-        # Combine new and existing changelog
-        full_changelog = changelog_content
-        if existing_changelog:
-            full_changelog += '\n' + existing_changelog
-        
-        # Write changelog
-        with open(changelog_file, 'w', encoding='utf-8') as f:
-            f.write(full_changelog)
-        
-        self.spider.logger.info(f"Generated changelog: {domain}/changelog.md")
+        self.spider.logger.info(f"Changes for domain {domain} tracked (changelog generation disabled)")
 
     def _build_changelog_content_for_domain(self, domain) -> str:
         """Build the changelog content for this domain"""
@@ -294,31 +247,7 @@ class DiffPipeline:
         now = datetime.now()
         base_version = now.strftime('%Y.%m.%d')
         
-        domain_dir = self.build_dir / domain
-        changelog_file = domain_dir / 'changelog.md'
-        
-        # Check existing changelog for today's builds
-        if changelog_file.exists():
-            try:
-                with open(changelog_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    
-                # Count today's versions
-                import re
-                today_versions = re.findall(rf'^## ({re.escape(base_version)}(?:-\d+)?) - ', content, re.MULTILINE)
-                
-                if today_versions:
-                    # Find highest sequence number
-                    max_seq = 0
-                    for version in today_versions:
-                        if '-' in version:
-                            seq = int(version.split('-')[-1])
-                            max_seq = max(max_seq, seq)
-                    
-                    return f'{base_version}-{max_seq + 1}'
-            except Exception:
-                pass
-        
+        # Simple version based on date
         return base_version
 
     def _log_change_summary_for_domain(self, domain):

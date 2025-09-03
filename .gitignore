@@ -81,3 +81,8 @@ cli/dist/
 
 # Jobs directory
 jobs/
+
+# Aimdoc directory
+
+docs/
+

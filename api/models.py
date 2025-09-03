@@ -15,14 +15,12 @@ class ScrapeRequest(BaseModel):
     """Request model for starting a scrape job"""
     name: str = Field(..., description="Project name for the documentation")
     url: HttpUrl = Field(..., description="Base URL of the documentation site")
-    output_mode: Optional[str] = Field(default="bundle", description="Output mode: 'bundle' (multiple files) or 'single' (one file)")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "name": "react-docs",
-                "url": "https://react.dev",
-                "output_mode": "bundle"
+                "url": "https://react.dev"
             }
         }
 
@@ -45,6 +43,7 @@ class JobStatusResponse(BaseModel):
     progress: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     result_summary: Optional[Dict[str, Any]] = None
+    request: Optional[Dict[str, Any]] = None
 
 
 class JobListResponse(BaseModel):

@@ -1,182 +1,155 @@
-import { Command } from 'commander';
-import * as fs from 'fs-extra';
-import * as path from 'path';
-import ora from 'ora';
-import chalk from 'chalk';
-import inquirer from 'inquirer';
-import { AimdocAPI } from '../api';
-import { sanitizeFilename, printError, printSuccess, printInfo } from '../utils';
+import chalk from 'chalk'
+import { Command } from 'commander'
+import * as fs from 'fs-extra'
+import inquirer from 'inquirer'
+import ora from 'ora'
+import * as path from 'path'
+import { AimdocAPI } from '../api'
+import { printError, printInfo, printSuccess, sanitizeFilename, validateOutputDirectory } from '../utils'
+
+async function generateReadmeIndex(docsPath: string): Promise<void> {
+  try {
+    const readmePath = path.join(docsPath, 'README.md')
+
+    // Check if README already exists (it should have been created by the backend).
+    if (await fs.pathExists(readmePath)) {
+      return
+    }
+
+    // Fallback README generation if it's missing.
+    const getAllMdFiles = async (dir: string, relativePath = ''): Promise<string[]> => {
+      const files: string[] = []
+      const entries = await fs.readdir(dir, { withFileTypes: true })
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const subFiles = await getAllMdFiles(path.join(dir, entry.name), path.join(relativePath, entry.name))
+          files.push(...subFiles)
+        } else if (entry.name.endsWith('.md') && entry.name !== 'README.md') {
+          files.push(path.join(relativePath, entry.name))
+        }
+      }
+      return files
+    }
+
+    const mdFiles = await getAllMdFiles(docsPath)
+    if (mdFiles.length === 0) return
+
+    const structure: Record<string, string[]> = {}
+    mdFiles.forEach((file) => {
+      const dir = path.dirname(file)
+      if (!structure[dir]) structure[dir] = []
+      structure[dir].push(path.basename(file, '.md'))
+    })
+
+    const readmeContent = `# Documentation Index\n\n${Object.entries(structure)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dir, files]) => {
+        const header = dir === '.' ? '' : `### ${dir}\n\n`
+        return header + files.map((file) => `- [${file}](./${path.join(dir, file)}.md)`).join('\n')
+      })
+      .join('\n\n')}`
+
+    await fs.writeFile(readmePath, readmeContent, 'utf-8')
+    printSuccess(`Generated fallback README.md index with ${mdFiles.length} files`)
+  } catch (error) {
+    console.warn('Warning: Could not generate fallback README.md index')
+  }
+}
 
 export function createDownloadCommand(): Command {
-  const downloadCommand = new Command('download');
-  
+  const downloadCommand = new Command('download')
+
   downloadCommand
     .description('Download results from a completed job')
     .argument('<job-id>', 'Job ID to download')
-    .option('-o, --output <dir>', 'Output directory', '.')
-    .option('-f, --file <file>', 'Download specific file only')
-    .option('--zip', 'Download as ZIP file')
-    .option('--overwrite', 'Overwrite existing files')
+    .option('-o, --output-dir <dir>', 'Output directory for the documentation', './docs')
+    .option('--overwrite', 'Overwrite existing files if they already exist')
     .action(async (jobId: string, options) => {
+      const spinner = ora('Initializing download...').start()
       try {
-        const api = new AimdocAPI();
-        
-        // Handle ZIP download
-        if (options.zip) {
-          const spinner = ora('Downloading job results as ZIP...').start();
-          
-          try {
-            // Get job details for filename
-            const status = await api.getJobStatus(jobId);
-            const projectName = sanitizeFilename(status.result_summary?.build_path?.split('/').pop() || jobId);
-            const outputPath = path.resolve(options.output, `${projectName}-results.zip`);
-            
-            // Check if file exists
-            if (!options.overwrite && await fs.pathExists(outputPath)) {
-              spinner.stop();
-              const answer = await inquirer.prompt([
-                {
-                  type: 'confirm',
-                  name: 'overwrite',
-                  message: `File ${outputPath} already exists. Overwrite?`,
-                  default: false
-                }
-              ]);
-              
-              if (!answer.overwrite) {
-                console.log('Download cancelled.');
-                return;
-              }
-            }
-            
-            await fs.ensureDir(path.dirname(outputPath));
-            await api.downloadJobZip(jobId, outputPath);
-            
-            spinner.succeed(`ZIP downloaded to: ${chalk.underline(outputPath)}`);
-            printInfo(`Extract with: ${chalk.bold(`unzip "${outputPath}"`)}`);
-            return;
-            
-          } catch (error) {
-            spinner.fail('Failed to download ZIP');
-            printError('ZIP download error', error as Error);
-            process.exit(1);
-          }
+        const api = new AimdocAPI()
+
+        // 1. Get job status to find the project name.
+        spinner.text = 'Fetching job details...'
+        const status = await api.getJobStatus(jobId)
+        if (!status || !status.result_summary) {
+          spinner.fail(`Could not retrieve details for job ${jobId}. Ensure the job has completed successfully.`)
+          process.exit(1)
         }
-        
-        // Get job results for individual file downloads
-        const spinner = ora('Getting job results...').start();
-        const results = await api.getJobResults(jobId);
-        spinner.succeed(`Found ${results.files.length} files`);
-        
-        if (results.files.length === 0) {
-          printInfo('No files to download.');
-          return;
+        const projectName = sanitizeFilename(status.request?.name || jobId)
+
+        // 2. Get the list of files to download.
+        spinner.text = 'Fetching file list...'
+        const results = await api.getJobResults(jobId)
+        if (!results || results.files.length === 0) {
+          spinner.succeed('No files available to download for this job.')
+          return
         }
-        
-        // Determine what to download
-        let filesToDownload = results.files;
-        
-        if (options.file) {
-          const requestedFile = results.files.find(f => 
-            f === options.file || f.endsWith(`/${options.file}`) || f.includes(options.file)
-          );
-          
-          if (!requestedFile) {
-            printError(`File '${options.file}' not found in job results`);
-            console.log('\nAvailable files:');
-            results.files.forEach(file => console.log(`  ${file}`));
-            process.exit(1);
-          }
-          
-          filesToDownload = [requestedFile];
+        spinner.succeed(`Found ${results.files.length} files to download.`)
+
+        // 3. Set up the local destination directory.
+        const finalDir = path.join(options.outputDir, projectName)
+        await fs.ensureDir(finalDir)
+        const isValid = await validateOutputDirectory(finalDir)
+        if (!isValid) {
+          spinner.fail(`Output directory '${finalDir}' is not writable or cannot be created.`)
+          process.exit(1)
         }
-        
-        // Prepare output directory
-        const outputDir = path.resolve(options.output);
-        await fs.ensureDir(outputDir);
-        
-        // Check for existing files
+
+        // 4. Check for existing files and confirm overwrite if necessary.
         if (!options.overwrite) {
-          const existingFiles = [];
-          for (const file of filesToDownload) {
-            const outputPath = path.join(outputDir, file);
-            if (await fs.pathExists(outputPath)) {
-              existingFiles.push(file);
-            }
-          }
-          
+          const existingFiles = (await Promise.all(results.files.map((file) => fs.pathExists(path.join(finalDir, file))))).filter(Boolean)
           if (existingFiles.length > 0) {
-            console.log(chalk.yellow('The following files already exist:'));
-            existingFiles.forEach(file => console.log(`  ${file}`));
-            
-            const answer = await inquirer.prompt([
+            spinner.stop()
+            const { confirmOverwrite } = await inquirer.prompt([
               {
                 type: 'confirm',
-                name: 'overwrite',
-                message: 'Do you want to overwrite them?',
-                default: false
-              }
-            ]);
-            
-            if (!answer.overwrite) {
-              console.log('Download cancelled.');
-              return;
+                name: 'confirmOverwrite',
+                message: `${existingFiles.length} file(s) already exist in the destination. Overwrite?`,
+                default: false,
+              },
+            ])
+            if (!confirmOverwrite) {
+              printInfo('Download cancelled.')
+              return
             }
+            spinner.start()
           }
         }
-        
-        // Download files
-        const downloadSpinner = ora(`Downloading ${filesToDownload.length} files...`).start();
-        let downloadedCount = 0;
-        
-        for (const file of filesToDownload) {
-          try {
-            const fileData = await api.downloadFile(jobId, file);
-            const outputPath = path.join(outputDir, file);
-            
-            // Ensure directory exists
-            await fs.ensureDir(path.dirname(outputPath));
-            
-            // Write file
-            await fs.writeFile(outputPath, fileData);
-            downloadedCount++;
-            
-            downloadSpinner.text = `Downloaded ${downloadedCount}/${filesToDownload.length} files...`;
-            
-          } catch (error) {
-            downloadSpinner.warn(`Failed to download ${file}: ${(error as Error).message}`);
-          }
-        }
-        
-        if (downloadedCount === filesToDownload.length) {
-          downloadSpinner.succeed(`Downloaded all ${downloadedCount} files`);
-        } else {
-          downloadSpinner.warn(`Downloaded ${downloadedCount}/${filesToDownload.length} files (some failed)`);
-        }
-        
-        printSuccess(`Files saved to: ${chalk.underline(outputDir)}`);
-        
-        // Show what was downloaded
-        if (downloadedCount > 0) {
-          console.log('\nDownloaded files:');
-          for (const file of filesToDownload.slice(0, 10)) { // Show first 10
-            const outputPath = path.join(outputDir, file);
-            if (await fs.pathExists(outputPath)) {
-              const stats = await fs.stat(outputPath);
-              console.log(`  ${file} ${chalk.gray(`(${stats.size} bytes)`)}`);
-            }
-          }
-          
-          if (filesToDownload.length > 10) {
-            console.log(chalk.gray(`  ... and ${filesToDownload.length - 10} more files`));
-          }
-        }
-        
-      } catch (error) {
-        printError('Failed to download job results', error as Error);
-        process.exit(1);
-      }
-    });
 
-  return downloadCommand;
+        // 5. Download all files.
+        spinner.text = `Downloading ${results.files.length} files...`
+        let downloadedCount = 0
+        for (const file of results.files) {
+          try {
+            const fileData = await api.downloadFile(jobId, file)
+            const outputPath = path.join(finalDir, file)
+            await fs.ensureDir(path.dirname(outputPath))
+            await fs.writeFile(outputPath, fileData)
+            downloadedCount++
+            spinner.text = `Downloaded ${downloadedCount}/${results.files.length} files...`
+          } catch (error) {
+            spinner.warn(`Failed to download ${file}: ${(error as Error).message}`)
+          }
+        }
+
+        if (downloadedCount === results.files.length) {
+          spinner.succeed(`Successfully downloaded all ${downloadedCount} files.`)
+        } else {
+          spinner.warn(`Downloaded ${downloadedCount}/${results.files.length} files, some failed.`)
+        }
+
+        printSuccess(`Documentation saved in: ${chalk.underline(finalDir)}`)
+
+        // 6. Generate a fallback README if the backend didn't provide one.
+        await generateReadmeIndex(finalDir)
+      } catch (error) {
+        spinner.fail('An unexpected error occurred during download.')
+        printError('Download failed', error as Error)
+        process.exit(1)
+      }
+    })
+
+  return downloadCommand
 }

@@ -5,7 +5,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import subprocess
 import shutil
 
@@ -77,6 +77,16 @@ class JobService:
         
         return True
     
+    def cleanup_finished_processes(self):
+        """Clean up finished processes to prevent zombie processes"""
+        finished_jobs = []
+        for job_id, process in self.job_processes.items():
+            if process.poll() is not None:
+                finished_jobs.append(job_id)
+        
+        for job_id in finished_jobs:
+            del self.job_processes[job_id]
+    
     async def _run_scrapy(self, job_id: str):
         """Run scrapy in a subprocess"""
         job = self.jobs[job_id]
@@ -103,8 +113,8 @@ class JobService:
             
             self.job_processes[job_id] = process
             
-            # Wait for completion
-            stdout, stderr = process.communicate()
+            # Monitor process asynchronously instead of blocking
+            stdout, stderr, return_code = await self._monitor_process(job_id, process)
             
             # Update job status based on scraped content first, then return code
             build_path = Path(job["build_dir"])
@@ -142,7 +152,7 @@ class JobService:
                 }
                 job["progress"]["pages_scraped"] = scraped_items
                 job["progress"]["files_created"] = file_count
-            elif process.returncode == 0:
+            elif return_code == 0:
                 # Scrapy completed successfully but found no pages
                 job["status"] = JobStatus.FAILED
                 job["error_message"] = f"No pages were scraped (Scrapy completed but found 0 items)"
@@ -150,7 +160,7 @@ class JobService:
             else:
                 # Scrapy failed
                 job["status"] = JobStatus.FAILED
-                job["error_message"] = f"Scrapy failed with code {process.returncode}: {stderr}"
+                job["error_message"] = f"Scrapy failed with code {return_code}: {stderr}"
                 job["completed_at"] = datetime.now()
         
         except Exception as e:
@@ -164,6 +174,35 @@ class JobService:
                 del self.job_processes[job_id]
             
             os.chdir(original_cwd)
+    
+    async def _monitor_process(self, job_id: str, process: subprocess.Popen, timeout: int = 600):
+        """Monitor process asynchronously without blocking the API"""
+        start_time = datetime.now()
+        
+        while True:
+            # Check if process is still running
+            return_code = process.poll()
+            
+            if return_code is not None:
+                # Process completed, collect output
+                stdout, stderr = process.communicate()
+                return stdout, stderr, return_code
+            
+            # Check for timeout (default 10 minutes)
+            if (datetime.now() - start_time).total_seconds() > timeout:
+                print(f"Job {job_id} timed out after {timeout} seconds, terminating")
+                process.terminate()
+                try:
+                    # Give process 5 seconds to terminate gracefully
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't terminate
+                    process.kill()
+                    stdout, stderr = process.communicate()
+                return stdout, stderr, -1
+            
+            # Sleep for 1 second before checking again (non-blocking)
+            await asyncio.sleep(1)
     
     def get_job_status(self, job_id: str) -> Optional[JobStatusResponse]:
         """Get job status"""

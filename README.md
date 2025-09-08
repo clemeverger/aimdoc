@@ -47,11 +47,20 @@ Aimdoc is a **pure Python CLI tool** that runs completely locally - no server re
 
 ### 1. Install Aimdoc
 
+#### Option A: Quick Setup (Recommended)
+```bash
+# Clone and run setup script
+git clone https://github.com/clemeverger/aimdoc.git
+cd aimdoc
+./setup.sh
+```
+
+#### Option B: Manual Installation
 ```bash
 # Install directly from PyPI (when published)
 pip install aimdoc
 
-# Or install from source
+# Or install from source manually
 git clone https://github.com/clemeverger/aimdoc.git
 cd aimdoc
 pip install -e .
@@ -231,27 +240,56 @@ We love contributions! Here's how to get started:
 
 ### Development Setup
 
+#### Prerequisites
+- Python 3.8+ with pip
+- Git
+
+#### Quick Setup
 ```bash
 # Fork and clone the repo
 git clone https://github.com/clemeverger/aimdoc.git
 cd aimdoc
 
+# Run setup script (recommended)
+./setup.sh
+```
+
+#### Manual Setup
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
 # Install in development mode
 pip install -e .
 
-# Test the CLI
+# Verify installation
 aimdoc version
 aimdoc scrape --help
 ```
 
 ### Running Tests
 
+#### Basic Testing
 ```bash
 # Test with a simple documentation site
 aimdoc scrape https://typer.tiangolo.com --name "Test" --output-dir ./test-output
 
+# Test interactive mode
+aimdoc scrape
+```
+
+#### Debug Mode
+```bash
 # Run with verbose logging to debug issues
 # Edit aimdoc/settings.py and set LOG_LEVEL = 'DEBUG'
+aimdoc scrape https://docs.example.com --name "Debug Test" --output-dir ./debug-output
+```
+
+#### Testing Different Sites
+```bash
+# Test with various documentation structures
+aimdoc scrape https://fastapi.tiangolo.com --name "FastAPI" --output-dir ./test-fastapi
+aimdoc scrape https://tailwindcss.com/docs --name "Tailwind" --output-dir ./test-tailwind
 ```
 
 ### Code Style

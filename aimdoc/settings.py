@@ -12,9 +12,8 @@ DOWNLOADER_MIDDLEWARES = {}
 # Configure item pipelines
 ITEM_PIPELINES = {
     'aimdoc.pipelines.optimized_html_markdown.OptimizedHtmlMarkdownPipeline': 150,
-    'aimdoc.pipelines.progress_tracker.ProgressTrackerPipeline': 250,  # Before AssemblePipeline
+    'aimdoc.pipelines.progress_tracker.ProgressTrackerPipeline': 250,  # Progress tracking
     'aimdoc.pipelines.assemble.AssemblePipeline': 300,
-    'aimdoc.pipelines.diff.DiffPipeline': 400,
 }
 
 # Enable HTTP caching
@@ -39,7 +38,11 @@ CONCURRENT_REQUESTS_PER_DOMAIN = 2  # Reduced from 8 to save memory
 DELTAFETCH_ENABLED = False
 
 # Configure user agent
-USER_AGENT = 'aimdoc (+https://github.com/your-org/aimdoc)'
+USER_AGENT = 'aimdoc (+https://github.com/clemeverger/aimdoc)'
+
+# CLI-specific settings for direct execution
+LOG_LEVEL = 'WARNING'  # Reduce log noise in CLI mode
+TELNETCONSOLE_ENABLED = False  # Disable telnet console for CLI
 
 # Optimized download delay for faster scraping
 DOWNLOAD_DELAY = 0.25           # Reduced from 0.5

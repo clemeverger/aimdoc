@@ -79,7 +79,7 @@ class ProgressTrackerPipeline:
         self._update_spider_stats()
     
     def _update_spider_stats(self):
-        """Update spider stats in memory and write minimal status file."""
+        """Update spider stats in memory and notify CLI if callback exists."""
         if not hasattr(self.spider, 'crawler') or not hasattr(self.spider.crawler, 'stats'):
             return
             
@@ -90,8 +90,34 @@ class ProgressTrackerPipeline:
             self.spider.crawler.stats.set_value('progress_files_created', self.files_created)
             self.spider.crawler.stats.set_value('progress_sitemap_processed', self.sitemap_processed)
             
-            # Write minimal status file for JobService monitoring (much lighter than before)
-            self._write_minimal_status()
+            # Update CLI progress if callback exists
+            self._update_cli_progress()
+            
+            # Write minimal status file for legacy compatibility (if manifest_path exists)
+            if self.manifest_path:
+                self._write_minimal_status()
+    
+    def _update_cli_progress(self):
+        """Update CLI progress display if callback exists"""
+        if not hasattr(self.spider, '_cli_progress_callback'):
+            return
+        
+        progress_callback = self.spider._cli_progress_callback
+        
+        # Update discovery phase
+        if self.pages_found > 0 and self.pages_scraped == 0:
+            if hasattr(progress_callback, 'update_discovery'):
+                progress_callback.update_discovery(self.pages_found)
+        
+        # Update scraping phase
+        elif self.pages_scraped > 0:
+            if hasattr(progress_callback, 'update_scraping'):
+                progress_callback.update_scraping(self.pages_scraped)
+        
+        # Update conversion phase
+        if self.files_created > 0:
+            if hasattr(progress_callback, 'update_conversion'):
+                progress_callback.update_conversion(self.files_created)
     
     def _write_minimal_status(self):
         """Write minimal status file for cross-process monitoring."""

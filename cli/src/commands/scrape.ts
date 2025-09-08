@@ -152,6 +152,9 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
   let lastProgress = { pages_scraped: 0, files_created: 0, pages_found: 0 }
   let currentPhase: JobPhase | null = null
   let connectionMessageHandled = false
+  let jobCompleted = false
+  let reconnectAttempts = 0
+  const maxReconnectAttempts = 5
 
   // Start connection spinner
   const connectionSpinner = ora({
@@ -159,10 +162,32 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
     discardStdin: false,
   }).start()
 
-  try {
-    ws = await api.connectToJobWebSocket(
-      jobId,
-      async (update: WebSocketJobUpdate) => {
+  const connectWebSocket = async (): Promise<void> => {
+    try {
+      // If reconnecting, get current job status to update progress
+      if (reconnectAttempts > 0) {
+        try {
+          const jobStatus = await api.getJobStatus(jobId)
+          if (jobStatus.progress) {
+            lastProgress = {
+              pages_scraped: jobStatus.progress.pages_scraped || 0,
+              files_created: jobStatus.progress.files_created || 0,
+              pages_found: jobStatus.progress.pages_found || 0
+            }
+            
+            // Update progress bar if it exists
+            if (progressBar && lastProgress.pages_found > 0) {
+              progressBar.update(lastProgress.pages_scraped, { files_created: lastProgress.files_created })
+            }
+          }
+        } catch (error) {
+          console.warn('Could not fetch current job status during reconnect')
+        }
+      }
+
+      ws = await api.connectToJobWebSocket(
+        jobId,
+        async (update: WebSocketJobUpdate) => {
         if (update.type === 'status_update') {
           // Handle initial connection message (only once)
           if (!connectionMessageHandled) {
@@ -260,6 +285,7 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
             }
 
             await downloadResults(api, jobId, projectName, outputDir, folderName)
+            jobCompleted = true
             ws?.close()
           } else if (update.status === JobStatus.FAILED) {
             // Stop all progress indicators
@@ -269,27 +295,53 @@ async function waitForCompletionWithWebSocket(api: AimdocAPI, jobId: string, pro
             }
             console.log('\n❌ Scraping failed')
             printError(update.error || update.message || 'Job failed with unknown error')
+            jobCompleted = true
             ws?.close()
             process.exit(1)
           }
         }
       },
       (error: Error) => {
-        connectionSpinner.fail('WebSocket connection failed')
-        printError('WebSocket connection failed', error)
-        process.exit(1)
+        if (!jobCompleted) {
+          console.warn(`WebSocket error: ${error.message}`)
+          if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++
+            console.log(`Attempting to reconnect... (${reconnectAttempts}/${maxReconnectAttempts})`)
+            setTimeout(connectWebSocket, 2000 * reconnectAttempts)
+          } else {
+            connectionSpinner.fail('WebSocket connection failed after multiple attempts')
+            printError('WebSocket connection failed', error)
+            process.exit(1)
+          }
+        }
       },
       () => {
         // WebSocket closed
+        if (!jobCompleted && reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++
+          console.log(`Connection lost. Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`)
+          setTimeout(connectWebSocket, 2000 * reconnectAttempts)
+        }
       }
     )
 
-    // Connection message will come from WebSocket initial update
+    // Reset reconnect attempts on successful connection
+    reconnectAttempts = 0
   } catch (error) {
-    connectionSpinner.fail('WebSocket unavailable')
-    printError('WebSocket unavailable', error as Error)
-    process.exit(1)
+    if (!jobCompleted && reconnectAttempts < maxReconnectAttempts) {
+      reconnectAttempts++
+      console.log(`Failed to connect. Retrying... (${reconnectAttempts}/${maxReconnectAttempts})`)
+      setTimeout(connectWebSocket, 2000 * reconnectAttempts)
+    } else {
+      connectionSpinner.fail('WebSocket unavailable')
+      printError('WebSocket unavailable', error as Error)
+      process.exit(1)
+    }
   }
+}
+
+  // Initial connection
+  await connectWebSocket()
 }
 
 async function downloadResults(api: AimdocAPI, jobId: string, projectName: string, outputDir: string, folderName: string): Promise<void> {

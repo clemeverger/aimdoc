@@ -23,21 +23,23 @@ class AssemblePipeline:
 
         project_name = self.manifest.get('name', 'default-project')
         
-        # Use job directory passed from spider (more reliable than os.getcwd)
-        if spider.job_dir:
-            job_dir = Path(spider.job_dir).resolve()
+        # For CLI mode, use output directory passed from CLI
+        if hasattr(spider, '_cli_output_dir'):
+            output_base = Path(spider._cli_output_dir).resolve()
+            spider.logger.info(f"Using CLI output directory: {output_base}")
+            self.output_dir = output_base / project_name
         else:
-            # Fallback to current working directory if job_dir not provided
-            job_dir = Path(os.getcwd()).resolve()
+            # Fallback for API mode - use job directory
+            if spider.job_dir:
+                job_dir = Path(spider.job_dir).resolve()
+            else:
+                job_dir = Path(os.getcwd()).resolve()
+            
+            spider.logger.info(f"Using job directory: {job_dir}")
+            docs_dir = job_dir / 'docs'
+            docs_dir.mkdir(exist_ok=True)
+            self.output_dir = docs_dir / project_name
         
-        # Log the job directory for debugging
-        spider.logger.info(f"Using job directory: {job_dir}")
-        
-        # Create docs directory inside the job directory, not at the project root
-        # This ensures files are created where job_service.py expects them
-        docs_dir = job_dir / 'docs'
-        docs_dir.mkdir(exist_ok=True)
-        self.output_dir = docs_dir / project_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
         spider.logger.info(f"Assembling documentation in: {self.output_dir}")
 

@@ -67,9 +67,9 @@ class AimdocSpider(scrapy.Spider):
             f"{self.base_url}/sitemap_index.xml"
         ]
     
-    def start_requests(self):
-        """Generate initial requests for automatic discovery"""
-        self.logger.info(f"=== SPIDER START_REQUESTS ===")
+    async def start(self):
+        """Generate initial requests for automatic discovery (async version)"""
+        self.logger.info(f"=== SPIDER START ===")
         self.logger.info(f"Base URL: {self.base_url}")
         self.logger.info(f"Project: {self.name_project}")
         self.logger.info(f"Discovery URLs: {self.seed_urls}")

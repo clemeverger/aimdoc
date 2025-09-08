@@ -5,7 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Node 16+](https://img.shields.io/badge/node-16+-green.svg)](https://nodejs.org/)
+[![CLI](https://img.shields.io/badge/interface-CLI-green.svg)](https://python.org/)
 
 ---
 
@@ -20,7 +20,7 @@ When coding with **Cursor**, **Claude**, or any LLM, you want the most up-to-dat
 
 ## 🛠️ **How It Works**
 
-Aimdoc is a complete documentation scraping solution with three components:
+Aimdoc is a **pure Python CLI tool** that runs completely locally - no server required!
 
 ### 🕷️ **Scrapy-Powered Engine**
 
@@ -29,19 +29,12 @@ Aimdoc is a complete documentation scraping solution with three components:
 - **Chapter organization** - Automatically structures docs into logical sections
 - **Robust error handling** - Handles failed pages gracefully with detailed diagnostics
 
-### 🖥️ **REST API Server**
-
-- **Real-time job tracking** with WebSocket support
-- **Concurrent job processing** for multiple documentation sites
-- **File download endpoints** for easy access to results
-- **Built with FastAPI** for high performance and automatic API docs
-
-### ⚡ **Beautiful CLI**
+### ⚡ **Beautiful CLI Interface**
 
 - **Interactive setup** - Just run `aimdoc scrape` and follow the prompts
-- **Live progress tracking** with elegant progress bars and spinners
+- **Live progress tracking** with elegant progress bars and spinners powered by Rich
 - **Smart defaults** - Automatically detects project names and creates organized folders
-- **Comprehensive diagnostics** - Debug failed scrapes with detailed error reports
+- **100% local execution** - No API server, no network dependencies beyond scraping
 
 ---
 
@@ -50,45 +43,31 @@ Aimdoc is a complete documentation scraping solution with three components:
 ### Prerequisites
 
 - **Python 3.8+** with pip
-- **Node.js 16+** with npm/pnpm
 - Basic familiarity with command line
 
-### 1. Install the API Server
+### 1. Install Aimdoc
 
 ```bash
-# Clone the repository
+# Install directly from PyPI (when published)
+pip install aimdoc
+
+# Or install from source
 git clone https://github.com/clemeverger/aimdoc.git
 cd aimdoc
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Start the API server
-python start_api.py
+pip install -e .
 ```
 
-### 2. Install the CLI
-
-```bash
-# Install the CLI globally
-cd cli
-npm install -g .
-
-# Or use pnpm
-pnpm install -g .
-```
-
-### 3. Scrape Your First Documentation
+### 2. Scrape Your First Documentation
 
 ```bash
 # Interactive mode - just follow the prompts!
 aimdoc scrape
 
 # Or specify everything upfront
-aimdoc scrape https://docs.example.com -n "Example Docs" -o ./my-docs
+aimdoc scrape https://docs.example.com --name "Example Docs" --output-dir ./my-docs
 ```
 
-That's it! Your documentation will be downloaded as clean, AI-ready Markdown files.
+That's it! Your documentation will be downloaded as clean, AI-ready Markdown files. **No server setup required!**
 
 ---
 
@@ -116,14 +95,11 @@ aimdoc scrape https://fastapi.tiangolo.com
 # Custom project name and output directory
 aimdoc scrape https://docs.python.org --name "Python Official" --output-dir ./references
 
-# Check job status
-aimdoc jobs
+# See all available commands
+aimdoc --help
 
-# Download results from a previous job
-aimdoc download <job-id>
-
-# Diagnose failed scrapes
-aimdoc diagnose <job-id> --verbose
+# Check version
+aimdoc version
 ```
 
 ---
@@ -132,8 +108,7 @@ aimdoc diagnose <job-id> --verbose
 
 ```mermaid
 graph TB
-    CLI[🖥️ CLI Tool] --> API[🔌 FastAPI Server]
-    API --> Engine[🕷️ Scrapy Engine]
+    CLI[🖥️ CLI Tool] --> Engine[🕷️ Scrapy Engine]
 
     Engine --> Discover[🔍 Sitemap Discovery]
     Engine --> Extract[📄 Content Extraction]
@@ -154,9 +129,8 @@ graph TB
 
 - **🕷️ AimdocSpider**: Intelligent web crawler with sitemap discovery
 - **📝 Markdown Pipeline**: Converts HTML to clean, LLM-optimized Markdown
-- **📊 Progress Tracker**: Real-time updates via WebSocket
-- **🔧 Job Service**: Manages concurrent scraping jobs
-- **⚡ CLI Interface**: Beautiful command-line experience
+- **📊 Progress Tracker**: Real-time CLI progress with Rich UI components
+- **⚡ CLI Interface**: Beautiful command-line experience with Typer
 
 ---
 
@@ -179,9 +153,9 @@ graph TB
 ### 🎯 **Developer Experience**
 
 - **Interactive CLI**: No need to memorize commands or flags
-- **Real-time feedback**: See progress as it happens
-- **Detailed diagnostics**: Understand exactly what went wrong
+- **Real-time feedback**: Beautiful progress bars and spinners with Rich
 - **Smart defaults**: Works great out of the box
+- **Local execution**: No server setup or management required
 
 ### 🌐 **Universal Compatibility**
 
@@ -196,43 +170,28 @@ graph TB
 
 ```
 aimdoc/
-├── 🕷️ aimdoc/                 # Scrapy spider and pipelines
+├── 🤖 aimdoc/                 # Main Python package
+│   ├── __main__.py            # CLI entry point
+│   ├── cli/                   # CLI components
+│   │   ├── commands.py        # Main commands (scrape, version)
+│   │   ├── progress.py        # Rich-based progress tracking
+│   │   └── utils.py           # CLI utilities
 │   ├── spiders/
-│   │   └── aimdoc.py          # Main spider with smart discovery
+│   │   └── aimdoc.py          # Scrapy spider with smart discovery
 │   ├── pipelines/
 │   │   ├── optimized_html_markdown.py  # HTML → Markdown conversion
-│   │   ├── progress_tracker.py         # Real-time progress updates
+│   │   ├── progress_tracker.py         # Progress tracking pipeline
 │   │   └── assemble.py                 # File organization
-│   └── settings.py            # Scrapy configuration
-├── 🔌 api/                    # FastAPI server
-│   ├── main.py               # API application
-│   ├── routers/
-│   │   └── jobs.py           # Job management endpoints
-│   └── services/
-│       └── job_service.py    # Core job processing logic
-├── ⚡ cli/                    # Command-line interface
-│   ├── src/
-│   │   ├── commands/         # CLI commands (scrape, diagnose, etc.)
-│   │   ├── api.ts           # API client
-│   │   └── utils.ts         # Helper utilities
-│   └── package.json
-└── 📄 docs/                  # Example scraped documentation
+│   ├── settings.py            # Scrapy configuration
+│   └── items.py              # Scrapy items
+├── setup.py                   # Package installation
+├── requirements.txt           # Dependencies
+└── README.md                  # This file
 ```
 
 ---
 
 ## 🔧 **Configuration**
-
-### Environment Variables
-
-```bash
-# API Server (optional)
-AIMDOC_API_URL=http://localhost:8000    # API server URL
-AIMDOC_JOBS_DIR=./jobs                  # Job storage directory
-
-# Scraping (optional)
-SCRAPY_SETTINGS_MODULE=aimdoc.settings  # Custom Scrapy settings
-```
 
 ### Custom Scrapy Settings
 
@@ -240,12 +199,28 @@ You can customize the scraping behavior by modifying `aimdoc/settings.py`:
 
 ```python
 # Increase concurrency for faster scraping
-CONCURRENT_REQUESTS = 32
-CONCURRENT_REQUESTS_PER_DOMAIN = 16
+CONCURRENT_REQUESTS = 8
+CONCURRENT_REQUESTS_PER_DOMAIN = 4
 
 # Adjust delays
-DOWNLOAD_DELAY = 0.1
-AUTOTHROTTLE_START_DELAY = 0.25
+DOWNLOAD_DELAY = 0.25
+AUTOTHROTTLE_START_DELAY = 0.5
+
+# Enable more verbose logging
+LOG_LEVEL = 'INFO'
+```
+
+### CLI Options
+
+```bash
+# Run with custom output directory
+aimdoc scrape https://docs.example.com --output-dir ~/Documentation
+
+# Specify project name explicitly
+aimdoc scrape https://docs.example.com --name "My Project Docs"
+
+# Combine options
+aimdoc scrape https://docs.example.com --name "Docs" --output-dir ./references
 ```
 
 ---
@@ -261,34 +236,29 @@ We love contributions! Here's how to get started:
 git clone https://github.com/clemeverger/aimdoc.git
 cd aimdoc
 
-# Install Python dependencies
-pip install -r requirements.txt
+# Install in development mode
+pip install -e .
 
-# Install CLI dependencies
-cd cli && npm install
-
-# Start the API server in development mode
-python start_api.py
-
-# In another terminal, test the CLI
-cd cli && npm run dev
+# Test the CLI
+aimdoc version
+aimdoc scrape --help
 ```
 
 ### Running Tests
 
 ```bash
-# Python tests
-python -m pytest
+# Test with a simple documentation site
+aimdoc scrape https://typer.tiangolo.com --name "Test" --output-dir ./test-output
 
-# CLI tests
-cd cli && npm test
+# Run with verbose logging to debug issues
+# Edit aimdoc/settings.py and set LOG_LEVEL = 'DEBUG'
 ```
 
 ### Code Style
 
 - Python: Follow PEP 8, use `black` for formatting
-- TypeScript: Use Prettier and ESLint configurations
 - Commit messages: Use conventional commits format
+- Test your changes with real documentation sites before submitting
 
 ---
 
@@ -296,22 +266,12 @@ cd cli && npm test
 
 ### Common Issues
 
-**❌ "No sitemap found"**
+**❌ "No sitemap found" or "NO URLS FOUND TO SCRAPE"**
 
 ```bash
-# Some sites don't have sitemaps - this is expected
-# The scraper will attempt fallback discovery methods
-aimdoc diagnose <job-id> --verbose
-```
-
-**❌ "Connection refused"**
-
-```bash
-# Make sure the API server is running
-python start_api.py
-
-# Check if port 8000 is available
-lsof -i :8000
+# Some sites don't have sitemaps - this is normal behavior
+# The scraper attempts multiple discovery methods automatically
+# Check the logs for more details about what URLs were tried
 ```
 
 **❌ "Permission denied"**
@@ -319,23 +279,37 @@ lsof -i :8000
 ```bash
 # Make sure you have write permissions to the output directory
 chmod +w ./docs
+
+# Or choose a different output directory you own
+aimdoc scrape https://docs.example.com --output-dir ~/Documents/docs
+```
+
+**❌ "Command not found: aimdoc"**
+
+```bash
+# Make sure you installed the package correctly
+pip install -e .
+
+# Or run directly with Python
+python -m aimdoc --help
 ```
 
 ### Getting Help
 
-- 📖 Check the [CLI documentation](./cli/README.md)
 - 🐛 [Report bugs](https://github.com/clemeverger/aimdoc/issues)
+- 💡 [Request features](https://github.com/clemeverger/aimdoc/issues)
+- 📖 Check the source code for more details
 
 ---
 
 ## 📋 **Roadmap**
 
+- [ ] **Enhanced site discovery** - better URL detection algorithms
 - [ ] **Plugin system** for custom content extractors
-- [ ] **Incremental updates** - only scrape changed pages
 - [ ] **Multiple output formats** (JSON, YAML, etc.)
-- [ ] **Cloud deployment** templates (Docker, Kubernetes)
-- [ ] **Integration guides** for popular AI coding assistants
+- [ ] **Incremental updates** - only scrape changed pages
 - [ ] **Batch processing** for multiple documentation sites
+- [ ] **Integration with AI coding assistants** (direct Claude/Cursor plugins)
 
 ---
 
@@ -347,10 +321,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 **Acknowledgments**
 
-- **Scrapy** - The powerful and flexible web scraping framework
-- **FastAPI** - Modern, fast web framework for building APIs
-- **Commander.js** - The complete solution for Node.js command-line programs
-- **Inquirer.js** - Beautiful interactive command line user interfaces
+- **Scrapy** - The powerful and flexible web scraping framework that powers our engine
+- **Rich** - Beautiful terminal formatting and progress bars for the CLI experience
+- **Typer** - Modern Python CLI framework for building the command interface
+- **Beautiful Soup & Markdownify** - HTML parsing and Markdown conversion libraries
 
 ---
 

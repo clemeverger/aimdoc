@@ -26,26 +26,29 @@ class AssemblePipeline:
         # For CLI mode, use output directory passed from CLI
         if hasattr(spider, '_cli_output_dir'):
             output_base = Path(spider._cli_output_dir).resolve()
-            spider.logger.info(f"Using CLI output directory: {output_base}")
+            spider.logger.info(f"CLI mode: Using output directory: {output_base}")
             self.output_dir = output_base / project_name
         else:
-            # Fallback for API mode - use job directory
-            if spider.job_dir:
+            # Fallback for API mode - use job directory with better error handling
+            if hasattr(spider, 'job_dir') and spider.job_dir:
                 job_dir = Path(spider.job_dir).resolve()
+                spider.logger.info(f"API mode: Using job directory: {job_dir}")
             else:
-                job_dir = Path(os.getcwd()).resolve()
+                # Use a safe default instead of getcwd() for better global install compatibility
+                import tempfile
+                job_dir = Path(tempfile.gettempdir()) / 'aimdoc_jobs'
+                spider.logger.warning(f"No job_dir specified, using temporary directory: {job_dir}")
             
-            spider.logger.info(f"Using job directory: {job_dir}")
             docs_dir = job_dir / 'docs'
-            docs_dir.mkdir(exist_ok=True)
+            docs_dir.mkdir(parents=True, exist_ok=True)
             self.output_dir = docs_dir / project_name
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        spider.logger.info(f"Assembling documentation in: {self.output_dir}")
+        spider.logger.info(f"Final output directory: {self.output_dir.resolve()}")
 
     def process_item(self, item, spider):
         """Process pages immediately without storing metadata."""
-        if item.get('md'):
+        if 'md' in item:  # Process if md field exists, even if empty
             # Process the page immediately to save memory
             self._process_page_immediately(item)
         return item
@@ -77,7 +80,10 @@ class AssemblePipeline:
         Finalize the assembly process.
         Individual markdown files are already created during processing.
         """
-        spider.logger.info(f"Assembly complete. Generated {self.files_created_count} files.")
+        spider.logger.info(f"Assembly completed: Generated {self.files_created_count} files")
+        
+        # Store the final count in the crawler for CLI access
+        spider.crawler._assemble_pipeline_files_created = self.files_created_count
 
 
 

@@ -1,3 +1,7 @@
+import tempfile
+import os
+from pathlib import Path
+
 BOT_NAME = 'aimdoc'
 
 SPIDER_MODULES = ['aimdoc.spiders']
@@ -16,10 +20,10 @@ ITEM_PIPELINES = {
     'aimdoc.pipelines.assemble.AssemblePipeline': 300,
 }
 
-# Enable HTTP caching
+# Enable HTTP caching with absolute path to avoid working directory issues
 HTTPCACHE_ENABLED = True
 HTTPCACHE_EXPIRATION_SECS = 3600 * 24  # 24 hours
-HTTPCACHE_DIR = 'httpcache'
+HTTPCACHE_DIR = str(Path(tempfile.gettempdir()) / 'aimdoc' / 'httpcache')
 HTTPCACHE_IGNORE_HTTP_CODES = [301, 302, 303, 304, 307, 308]
 HTTPCACHE_STORAGE = 'scrapy.extensions.httpcache.FilesystemCacheStorage'
 

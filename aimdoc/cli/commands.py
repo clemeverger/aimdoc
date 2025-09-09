@@ -42,14 +42,17 @@ def scrape_command(url: Optional[str] = None, name: Optional[str] = None, output
         if output_dir == "./docs":
             output_dir = Prompt.ask("📁 Output directory", default="./docs")
         
-        # Ensure output directory exists
+        # Ensure output directory exists and resolve to absolute path
         output_path = ensure_output_dir(output_dir)
         final_path = output_path / name
+        
+        # Log resolved paths for debugging
+        console.print(f"[dim]Debug: Resolved output path: {output_path.resolve()}[/dim]")
         
         # Show summary
         summary_table = f"""[bold]URL:[/bold] {url}
 [bold]Project:[/bold] {name}
-[bold]Output:[/bold] {final_path}"""
+[bold]Output:[/bold] {final_path.resolve()}"""
         
         panel = Panel(
             summary_table,
@@ -68,11 +71,11 @@ def scrape_command(url: Optional[str] = None, name: Optional[str] = None, output
         else:
             console.print("🚀 [bold green]Starting scrape...[/bold green]")
         
-        # Start the scraping process
-        _run_scrapy_spider(url, name, str(output_path))
+        # Start the scraping process with absolute path
+        _run_scrapy_spider(url, name, str(output_path.resolve()))
         
         # Show final success message
-        console.print(f"\n🎉 [bold green]Success![/bold green] Documentation saved to [bold]{final_path}[/bold]")
+        console.print(f"\n🎉 [bold green]Success![/bold green] Documentation saved to [bold]{final_path.resolve()}[/bold]")
         
         # Generate README suggestion
         readme_path = final_path / "README.md"
@@ -99,21 +102,22 @@ def _run_scrapy_spider(url: str, name: str, output_dir: str):
         manifest_path = f.name
     
     try:
-        # Get Scrapy settings
-        settings = get_project_settings()
+        # Force aimdoc settings instead of relying on project discovery
+        from aimdoc import settings as aimdoc_settings
         
-        # Create and configure the crawler process
-        process = CrawlerProcess(settings)
+        # Create settings dict from aimdoc.settings module
+        settings_dict = {}
+        for setting_name in dir(aimdoc_settings):
+            if setting_name.isupper():
+                settings_dict[setting_name] = getattr(aimdoc_settings, setting_name)
         
-        # Create spider instance and set CLI-specific attributes
-        spider = AimdocSpider(manifest=manifest_path)
-        spider._cli_output_dir = output_dir
+        # Create and configure the crawler process with aimdoc settings
+        process = CrawlerProcess(settings_dict)
         
-        # Set up CLI progress callback
-        progress_callback = set_cli_progress_callback(spider)
+        # Set up CLI progress callback (we'll get spider instance later)
+        progress_callback = None
         
-        # Start progress display
-        progress_callback.start_discovery()
+        # Progress callback will be set up after spider creation
         
         # Add custom signal handlers for phase transitions
         def handle_spider_opened(spider):
@@ -125,8 +129,14 @@ def _run_scrapy_spider(url: str, name: str, output_dir: str):
             if reason == 'finished':
                 # Extract final stats for summary
                 stats = spider.crawler.stats.get_stats()
+                
+                # Get files created directly from AssemblePipeline if available
+                files_created = stats.get('files_created', 0)
+                if hasattr(spider.crawler, '_assemble_pipeline_files_created'):
+                    files_created = spider.crawler._assemble_pipeline_files_created
+                
                 summary = {
-                    'files_created': stats.get('files_created', 0),
+                    'files_created': files_created,
                     'pages_scraped': stats.get('progress_pages_scraped', 0),
                     'pages_discovered': stats.get('progress_pages_found', 0),
                     'pages_failed': stats.get('downloader/exception_count', 0)
@@ -137,10 +147,21 @@ def _run_scrapy_spider(url: str, name: str, output_dir: str):
         
         # Connect signals
         from scrapy import signals
-        process.crawl(AimdocSpider, manifest=manifest_path)
+        
+        # Create a custom spider class with CLI output directory
+        class CLIAimdocSpider(AimdocSpider):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._cli_output_dir = output_dir
+        
+        process.crawl(CLIAimdocSpider, manifest=manifest_path)
         
         # Connect signals to the crawler
         crawler = list(process.crawlers)[0]  # Get the crawler we just added
+        spider = crawler.spider  # Get the actual spider instance
+        
+        # Set up CLI progress callback now that we have the spider
+        progress_callback = set_cli_progress_callback(spider)
         
         crawler.signals.connect(handle_spider_opened, signal=signals.spider_opened)
         crawler.signals.connect(handle_spider_closed, signal=signals.spider_closed)

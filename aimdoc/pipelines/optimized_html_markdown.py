@@ -63,7 +63,11 @@ class OptimizedHtmlMarkdownPipeline:
     
     def process_item(self, item, spider):
         """Process HTML item in one pass - clean and convert to markdown"""
+        spider.logger.info(f"OptimizedHtmlMarkdownPipeline processing: {item.get('url', 'unknown')}")
+        spider.logger.info(f"  HTML content length: {len(item.get('html', ''))}")
+        
         if not item.get('html'):
+            spider.logger.warning(f"  No HTML content found, setting empty markdown")
             item['md'] = ''
             return item
             
@@ -92,6 +96,9 @@ class OptimizedHtmlMarkdownPipeline:
         # Update both fields
         item['html'] = html_content  # Store cleaned HTML
         item['md'] = markdown_content
+        
+        spider.logger.info(f"  Markdown content length: {len(markdown_content)}")
+        spider.logger.info(f"  Successfully converted HTML to markdown")
         
         return item
 

@@ -48,6 +48,7 @@ Aimdoc is a **pure Python CLI tool** that runs completely locally - no server re
 ### 1. Install Aimdoc
 
 #### Option A: Quick Setup (Recommended)
+
 ```bash
 # Clone and run setup script
 git clone https://github.com/clemeverger/aimdoc.git
@@ -56,6 +57,7 @@ cd aimdoc
 ```
 
 #### Option B: Manual Installation
+
 ```bash
 # Install directly from PyPI (when published)
 pip install aimdoc
@@ -241,10 +243,12 @@ We love contributions! Here's how to get started:
 ### Development Setup
 
 #### Prerequisites
+
 - Python 3.8+ with pip
 - Git
 
 #### Quick Setup
+
 ```bash
 # Fork and clone the repo
 git clone https://github.com/clemeverger/aimdoc.git
@@ -255,6 +259,7 @@ cd aimdoc
 ```
 
 #### Manual Setup
+
 ```bash
 # Install dependencies
 pip install -r requirements.txt
@@ -270,6 +275,7 @@ aimdoc scrape --help
 ### Running Tests
 
 #### Basic Testing
+
 ```bash
 # Test with a simple documentation site
 aimdoc scrape https://typer.tiangolo.com --name "Test" --output-dir ./test-output
@@ -279,6 +285,7 @@ aimdoc scrape
 ```
 
 #### Debug Mode
+
 ```bash
 # Run with verbose logging to debug issues
 # Edit aimdoc/settings.py and set LOG_LEVEL = 'DEBUG'
@@ -286,6 +293,7 @@ aimdoc scrape https://docs.example.com --name "Debug Test" --output-dir ./debug-
 ```
 
 #### Testing Different Sites
+
 ```bash
 # Test with various documentation structures
 aimdoc scrape https://fastapi.tiangolo.com --name "FastAPI" --output-dir ./test-fastapi

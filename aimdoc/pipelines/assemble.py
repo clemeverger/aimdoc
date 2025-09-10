@@ -48,22 +48,42 @@ class AssemblePipeline:
 
     def process_item(self, item, spider):
         """Process pages immediately without storing metadata."""
-        if 'md' in item:  # Process if md field exists, even if empty
+        spider.logger.info(f"AssemblePipeline processing: {item.get('url', 'unknown')}")
+        
+        # Check if we have either markdown content or HTML content to process
+        has_md = 'md' in item and item.get('md')
+        has_html = 'html' in item and item.get('html')
+        
+        if has_md:
+            spider.logger.info(f"  Has markdown content ({len(item['md'])} chars)")
             # Process the page immediately to save memory
             self._process_page_immediately(item)
+        elif has_html:
+            spider.logger.warning(f"  Has HTML but no markdown - this shouldn't happen after OptimizedHtmlMarkdownPipeline")
+            spider.logger.warning(f"  HTML content length: {len(item['html'])}")
+            # Create empty markdown as fallback
+            item['md'] = ''
+            self._process_page_immediately(item)
+        else:
+            spider.logger.warning(f"  No content to process (no HTML or markdown)")
+            
         return item
     
     def _process_page_immediately(self, page):
         """Process and write a single page to disk immediately."""
+        self.spider.logger.info(f"  Processing page for writing: {page['url']}")
+        
         file_path = self._get_path_from_url(page['url'])
         if not file_path:
+            self.spider.logger.warning(f"  Could not generate file path from URL: {page['url']}")
             return
 
         target_path = self.output_dir / file_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         title = self._escape_yaml(page.get('title', 'Untitled'))
-        content = f'---\ntitle: "{title}"\nurl: {page["url"]}\n---\n\n{page["md"]}'
+        markdown_content = page.get('md', '')
+        content = f'---\ntitle: "{title}"\nurl: {page["url"]}\n---\n\n{markdown_content}'
 
         try:
             with open(target_path, 'w', encoding='utf-8') as f:
@@ -72,6 +92,8 @@ class AssemblePipeline:
             self.files_created_count += 1
             if hasattr(self.spider.crawler.stats, 'inc_value'):
                 self.spider.crawler.stats.inc_value('files_created')
+            self.spider.logger.info(f"  ✅ Successfully wrote file: {target_path}")
+            self.spider.logger.info(f"  📄 Content length: {len(content)} characters")
         except OSError as e:
             self.spider.logger.error(f"Failed to write file {target_path}: {e}")
 
@@ -90,32 +112,66 @@ class AssemblePipeline:
 
     def _get_path_from_url(self, url: str) -> Path | None:
         """
-        Converts a URL containing '/docs/' into a relative filesystem path.
+        Converts a URL into a relative filesystem path.
+        First tries to find '/docs/' pattern, then falls back to base URL relative path.
         Example: https://example.com/a/b/docs/foo/bar/ -> foo/bar/index.md
+        Example: https://example.com/guide/intro -> guide/intro.md
         """
         parsed_url = urlparse(url)
         path_str = parsed_url.path
         
-        # Find the '/docs/' segment and take everything after it (use pre-compiled regex).
-        match = self._docs_pattern.search(path_str)
-        if not match:
-            self.spider.logger.warning(f"URL '{url}' does not contain '/docs/' segment. Skipping.")
-            return None
+        self.spider.logger.info(f"  Generating file path from URL: {url}")
+        self.spider.logger.info(f"  URL path: {path_str}")
         
-        # The relative path is the part after '/docs/'.
-        relative_path = match.group(2)
+        # First try: Find the '/docs/' segment and take everything after it
+        match = self._docs_pattern.search(path_str)
+        if match:
+            self.spider.logger.info(f"  Found /docs/ pattern, using path after it")
+            # The relative path is the part after '/docs/'.
+            relative_path = match.group(2)
+            
+            if not relative_path:
+                return Path('index.md')
 
+            if relative_path.endswith('/'):
+                return Path(relative_path + 'index.md')
+            
+            path = Path(relative_path)
+            if not path.suffix:
+                return path.with_suffix('.md')
+
+            return path
+        
+        # Fallback: Use path relative to base URL
+        base_parsed = urlparse(self.spider.base_url)
+        base_path = base_parsed.path.rstrip('/')
+        
+        self.spider.logger.info(f"  No /docs/ pattern found, using base URL relative path")
+        self.spider.logger.info(f"  Base URL path: {base_path}")
+        
+        # Remove base path from URL path to get relative path
+        if path_str.startswith(base_path):
+            relative_path = path_str[len(base_path):].lstrip('/')
+        else:
+            # Use the full path if it doesn't start with base path
+            relative_path = path_str.lstrip('/')
+        
+        self.spider.logger.info(f"  Relative path: {relative_path}")
+        
         if not relative_path:
             return Path('index.md')
-
+        
         if relative_path.endswith('/'):
             return Path(relative_path + 'index.md')
         
         path = Path(relative_path)
         if not path.suffix:
             return path.with_suffix('.md')
-
-        return path
+        
+        # Replace characters that are problematic in filenames
+        sanitized_path = Path(str(path).replace('?', '_').replace('#', '_').replace(':', '_'))
+        
+        return sanitized_path
 
     def _escape_yaml(self, text: str) -> str:
         """Basic escaping for YAML strings."""

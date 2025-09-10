@@ -8,6 +8,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.table import Table
 from rich.panel import Panel
 from rich.align import Align
+from rich.text import Text
 
 console = Console()
 
@@ -156,6 +157,67 @@ class CLIProgressTracker:
             self.progress = None
         
         console.print(f"❌ [bold red]Error:[/bold red] {error}")
+    
+    def show_discovery_status(self, base_url: str, discovery_errors: list = None, internal_crawling_attempted: bool = False):
+        """Show discovery status and suggestions"""
+        if self.progress is not None:
+            self.progress.stop()
+            self.progress = None
+        
+        # Create status message
+        status_text = Text()
+        
+        if internal_crawling_attempted:
+            # Both sitemap and internal crawling failed
+            status_text.append("❌ Aucune page de documentation trouvée\n\n", style="bold red")
+            status_text.append("Aimdoc a tenté :\n", style="yellow")
+            status_text.append("  • Découverte par sitemap XML ❌\n", style="yellow")
+            status_text.append("  • Découverte par crawling interne ❌\n\n", style="yellow")
+        else:
+            # Only sitemap failed, internal crawling should start
+            status_text.append("⚠️ Aucun sitemap découvert sur ce site\n\n", style="bold yellow")
+            status_text.append("🔄 Basculement vers le crawling interne...\n\n", style="blue")
+        
+        # Add discovery errors if available
+        if discovery_errors:
+            status_text.append("🔍 Erreurs de découverte détectées :\n", style="bold yellow")
+            for i, error in enumerate(discovery_errors, 1):
+                if i <= 3:  # Show max 3 errors
+                    status_text.append(f"  {i}. {error['url']} - {error['error_type']}\n", style="dim yellow")
+            if len(discovery_errors) > 3:
+                status_text.append(f"  ... et {len(discovery_errors) - 3} autres erreurs\n", style="dim yellow")
+            status_text.append("\n")
+        
+        # Add appropriate suggestions
+        if internal_crawling_attempted:
+            status_text.append("💡 Suggestions :\n", style="bold blue")
+            status_text.append("  • Vérifiez que l'URL est correcte et accessible\n", style="blue")
+            status_text.append("  • Assurez-vous que le site a des pages de documentation\n", style="blue")
+            status_text.append("  • Vérifiez que les URLs de documentation contiennent '/docs/'\n", style="blue")
+            status_text.append("  • Le site pourrait ne pas avoir de documentation accessible\n", style="blue")
+            title_text = "[bold red]🚨 Échec complet de la découverte"
+            border_style = "red"
+        else:
+            status_text.append("ℹ️  Le crawling interne va explorer les liens du site\n", style="blue")
+            status_text.append("   pour trouver les pages de documentation...\n", style="blue")
+            title_text = "[bold yellow]🔄 Changement de stratégie de découverte"
+            border_style = "yellow"
+        
+        panel = Panel(
+            status_text,
+            title=title_text,
+            border_style=border_style,
+            padding=(1, 2)
+        )
+        console.print(panel)
+
+    def show_internal_crawling_status(self, pages_found: int):
+        """Show internal crawling progress"""
+        if self.discovery_task is not None:
+            self.progress.update(
+                self.discovery_task, 
+                description=f"🕷️ Crawling interne... {pages_found} pages trouvées"
+            )
 
 # Global progress tracker instance for CLI mode
 cli_progress = CLIProgressTracker()

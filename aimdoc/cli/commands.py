@@ -130,6 +130,18 @@ def _run_scrapy_spider(url: str, name: str, output_dir: str):
                 # Extract final stats for summary
                 stats = spider.crawler.stats.get_stats()
                 
+                # Check for discovery status (sitemap or internal crawling)
+                sitemap_failed = stats.get('sitemap_discovery_failed', False)
+                internal_crawling_attempted = stats.get('internal_crawling_attempted', False)
+                discovery_errors = stats.get('discovery_errors', [])
+                
+                # Only show error if both sitemap AND internal crawling failed
+                if sitemap_failed and not internal_crawling_attempted:
+                    # Show discovery status with option for internal crawling
+                    base_url = getattr(spider, 'base_url', url)
+                    progress_callback.show_discovery_status(base_url, discovery_errors, internal_crawling_attempted)
+                    return
+                
                 # Get files created directly from AssemblePipeline if available
                 files_created = stats.get('files_created', 0)
                 if hasattr(spider.crawler, '_assemble_pipeline_files_created'):

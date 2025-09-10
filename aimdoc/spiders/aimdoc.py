@@ -2,7 +2,7 @@ import json
 import hashlib
 import re
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from xml.etree import ElementTree
 
 import scrapy
@@ -35,6 +35,11 @@ class AimdocSpider(scrapy.Spider):
         self.chapters = {}  # Store chapter information extracted from URLs
         self.pages_scraped_count = 0  # Track scraped pages for progress
         self.failed_pages = []  # Track pages that failed to scrape
+        self.sitemap_found = False  # Track if any valid sitemap was found
+        self.urls_discovered_from_sitemaps = 0  # Track URLs found in sitemaps
+        self.internal_crawling_attempted = False  # Track if internal crawling was attempted
+        self.urls_discovered_from_crawling = 0  # Track URLs found by internal crawling
+        self.crawled_urls = set()  # Track already crawled URLs to avoid duplicates
         
         # Extract minimal configuration from manifest
         self.name_project = self.manifest.get("name", "aimdoc")
@@ -49,8 +54,9 @@ class AimdocSpider(scrapy.Spider):
         
         # Use hardcoded universal selectors
         self.selectors = {
-            "title": "h1, .title, .page-title",
-            "content": "main, article, .content, .prose, .markdown-body, .doc-content"
+            "title": "h1, .title, .page-title, title",
+            "content": "main, article, .content, .prose, .markdown-body, .doc-content",
+            "fallback_content": "body"  # Fallback for crawl mode
         }
         
         # No custom rate limiting - use Scrapy defaults
@@ -146,7 +152,39 @@ class AimdocSpider(scrapy.Spider):
         }
         self.discovery_errors.append(error_info)
         
-        return []
+        # Check if this was the last discovery attempt and trigger internal crawling
+        for request in self._check_and_start_internal_crawling():
+            yield request
+
+    def _check_and_start_internal_crawling(self):
+        """Check if we should start internal crawling as fallback"""
+        self.logger.info("=== CHECKING IF INTERNAL CRAWLING SHOULD START ===")
+        self.logger.info(f"  Sitemap found: {self.sitemap_found}")
+        self.logger.info(f"  Internal crawling attempted: {self.internal_crawling_attempted}")
+        self.logger.info(f"  URLs from sitemaps: {self.urls_discovered_from_sitemaps}")
+        
+        # Only start internal crawling if:
+        # 1. No sitemap was found successfully
+        # 2. Internal crawling hasn't been attempted yet
+        # 3. No URLs have been discovered from sitemaps
+        if (not self.sitemap_found and 
+            not self.internal_crawling_attempted and 
+            self.urls_discovered_from_sitemaps == 0):
+            
+            self.logger.info("=== SITEMAP DISCOVERY FAILED - STARTING INTERNAL CRAWLING ===")
+            self.logger.info(f"  Base URL: {self.base_url}")
+            yield from self._start_internal_crawling()
+        else:
+            self.logger.info("=== INTERNAL CRAWLING NOT NEEDED ===")
+            if self.sitemap_found:
+                self.logger.info("  Reason: Sitemap was found")
+            if self.internal_crawling_attempted:
+                self.logger.info("  Reason: Internal crawling already attempted")
+            if self.urls_discovered_from_sitemaps > 0:
+                self.logger.info(f"  Reason: Already found {self.urls_discovered_from_sitemaps} URLs from sitemaps")
+        
+        return
+        # Generator function should use yield
 
     def parse_page(self, response):
         """Main parsing method for documentation pages"""
@@ -203,6 +241,15 @@ class AimdocSpider(scrapy.Spider):
         content_html = ""
         if content_elements:
             content_html = content_elements.get() or ""
+            
+        # Fallback for crawl mode: if no content found with main selectors, try body
+        if not content_html and getattr(self, 'internal_crawling_attempted', False):
+            self.logger.info(f"  No content with main selectors, trying fallback for crawl mode")
+            fallback_selector = self.selectors.get("fallback_content", "body")
+            fallback_elements = response.css(fallback_selector)
+            if fallback_elements:
+                content_html = fallback_elements.get() or ""
+                self.logger.info(f"  Fallback content length: {len(content_html)}")
         
         # Create item
         item = DocPage(
@@ -237,6 +284,8 @@ class AimdocSpider(scrapy.Spider):
         
         try:
             root = ElementTree.fromstring(response.body)
+            # Mark that we found and successfully parsed a sitemap
+            self.sitemap_found = True
             # Handle XML namespace
             namespace = {"": "http://www.sitemaps.org/schemas/sitemap/0.9"}
             
@@ -334,6 +383,7 @@ class AimdocSpider(scrapy.Spider):
             self.chapters = {name: len(urls) for name, urls in chapter_urls.items()}
             
             # Store progress in Scrapy stats (non-blocking)
+            self.urls_discovered_from_sitemaps += urls_found
             if hasattr(self.crawler.stats, 'set_value'):
                 self.crawler.stats.set_value('pages_found', urls_found)
                 self.crawler.stats.set_value('sitemap_processed', True)
@@ -373,6 +423,10 @@ class AimdocSpider(scrapy.Spider):
                 self.logger.warning(f"Base URL pattern: {self.base_url}")
                 self.logger.warning("Check _in_scope() and _is_documentation_url() logic")
                 
+                # If no URLs found in sitemap, try internal crawling
+                for request in self._check_and_start_internal_crawling():
+                    yield request
+                
             # Summary validation
             total_processed = (filtering_stats['skipped_scope']['count'] + 
                              filtering_stats['skipped_not_doc']['count'] + 
@@ -389,6 +443,149 @@ class AimdocSpider(scrapy.Spider):
         except Exception as e:
             self.logger.error(f"Unexpected error parsing sitemap: {response.url}")
             self.logger.error(f"Error: {e}")
+
+    def _start_internal_crawling(self):
+        """Start internal URL crawling when sitemap discovery fails"""
+        self.logger.info(f"=== STARTING INTERNAL URL CRAWLING ===")
+        self.logger.info(f"Base URL: {self.base_url}")
+        self.internal_crawling_attempted = True
+        
+        # Set internal crawling attempted flag
+        if hasattr(self.crawler.stats, 'set_value'):
+            self.crawler.stats.set_value('internal_crawling_attempted', True)
+        
+        # Start crawling from base URL
+        yield Request(
+            self.base_url,
+            callback=self._parse_page_for_links,
+            meta={
+                "depth": 0,
+                "max_depth": 3,  # Limit crawling depth
+                "from_internal_crawling": True
+            },
+            errback=self._handle_crawling_error
+        )
+
+    def _parse_page_for_links(self, response):
+        """Parse page content and extract internal links for documentation"""
+        self.logger.info(f"=== CRAWLING PAGE FOR LINKS: {response.url} ===")
+        current_depth = response.meta.get("depth", 0)
+        max_depth = response.meta.get("max_depth", 3)
+        
+        self.logger.info(f"  Current depth: {current_depth}/{max_depth}")
+        self.logger.info(f"  URLs discovered so far: {self.urls_discovered_from_crawling}")
+        
+        # Check if this page itself is a documentation page to scrape
+        is_doc_url = self._is_documentation_url(response.url)
+        already_discovered = response.url in self.discovered_urls
+        
+        self.logger.info(f"  Is documentation URL: {is_doc_url}")
+        self.logger.info(f"  Already discovered: {already_discovered}")
+        
+        if is_doc_url and not already_discovered:
+            self.logger.info(f"✅ Found NEW documentation page: {response.url}")
+            self.discovered_urls.add(response.url)
+            self.urls_discovered_from_crawling += 1
+            
+            # Extract chapter info and add to discovered URLs
+            chapter_info = self._extract_chapter_from_url(response.url)
+            self.chapter_order[response.url] = len(self.chapter_order)
+            
+            self.logger.info(f"  📝 Chapter: {chapter_info['chapter']}")
+            self.logger.info(f"  🔢 Order: {len(self.chapter_order)}")
+            
+            # Instead of creating a new Request for the same URL, parse it directly
+            # This avoids duplicate filtering issues
+            self.logger.info(f"  📄 Parsing documentation page directly: {response.url}")
+            
+            # Set up proper meta for parsing
+            response.meta['chapter'] = chapter_info['chapter']
+            response.meta['chapter_order'] = len(self.chapter_order)
+            
+            # Parse this page as documentation
+            yield from self.parse_page(response)
+        elif is_doc_url and already_discovered:
+            self.logger.info(f"⏭️  Documentation page already discovered: {response.url}")
+        else:
+            self.logger.info(f"⏭️  Not a documentation URL: {response.url}")
+        
+        # Extract links if we haven't reached max depth
+        if current_depth < max_depth:
+            links_found = 0
+            links_processed = 0
+            
+            # Extract all links from the page
+            for link in response.css('a[href]'):
+                href = link.css('::attr(href)').get()
+                if not href:
+                    continue
+                    
+                links_processed += 1
+                
+                # Convert relative URLs to absolute
+                absolute_url = urljoin(response.url, href)
+                
+                # Filter internal documentation links
+                if self._should_crawl_internal_url(absolute_url, current_depth):
+                    if absolute_url not in self.crawled_urls:
+                        self.crawled_urls.add(absolute_url)
+                        links_found += 1
+                        
+                        self.logger.info(f"Found internal link (depth {current_depth + 1}): {absolute_url}")
+                        
+                        # Create crawling request for this link
+                        yield Request(
+                            absolute_url,
+                            callback=self._parse_page_for_links,
+                            meta={
+                                "depth": current_depth + 1,
+                                "max_depth": max_depth,
+                                "from_internal_crawling": True
+                            },
+                            errback=self._handle_crawling_error
+                        )
+                
+                # Safety limit: stop processing after 100 links per page
+                if links_processed >= 100:
+                    self.logger.warning(f"Reached link processing limit (100) for page: {response.url}")
+                    break
+            
+            self.logger.info(f"Page {response.url} - Links processed: {links_processed}, Links to crawl: {links_found}")
+        else:
+            self.logger.info(f"Reached max depth ({max_depth}) for URL: {response.url}")
+
+    def _should_crawl_internal_url(self, url, current_depth):
+        """Check if an internal URL should be crawled"""
+        # Basic filters
+        if not self._is_internal_url(url):
+            return False
+        
+        if url in self.crawled_urls:
+            return False
+        
+        # Safety limit on total URLs discovered
+        if self.urls_discovered_from_crawling >= 500:
+            self.logger.warning(f"Reached URL discovery limit (500)")
+            return False
+        
+        # Skip non-documentation URLs for crawling (but still follow them to find more links)
+        # We allow non-doc URLs for link extraction but prioritize doc URLs
+        return True
+
+    def _is_internal_url(self, url):
+        """Check if URL belongs to the same domain as base_url"""
+        try:
+            base_domain = urlparse(self.base_url).netloc.lower()
+            url_domain = urlparse(url).netloc.lower()
+            return url_domain == base_domain
+        except Exception:
+            return False
+
+    def _handle_crawling_error(self, failure):
+        """Handle internal crawling errors gracefully"""
+        self.logger.warning(f"Internal crawling error for {failure.request.url}: {failure.value}")
+        # Continue crawling even if individual URLs fail
+        return []
     
     def _extract_chapter_from_url(self, url):
         """Extract chapter information from URL structure - generic implementation"""
@@ -465,9 +662,60 @@ class AimdocSpider(scrapy.Spider):
     
     def _is_documentation_url(self, url):
         """Check if URL looks like documentation"""
+        url_lower = url.lower()
         
-        # We are only interested in URLs that contain '/docs/'
-        return '/docs/' in url.lower()
+        # Common documentation URL patterns
+        doc_patterns = [
+            '/docs/',
+            '/documentation/',
+            '/guide/',
+            '/guides/',
+            '/manual/',
+            '/help/',
+            '/tutorial/',
+            '/tutorials/',
+            '/reference/',
+            '/api/',
+            '/wiki/',
+            '/knowledge',
+            '/faq',
+            '/howto',
+            '/getting-started',
+            '/quickstart',
+            '/learn/',
+            '/support/',
+        ]
+        
+        # Check if any pattern matches
+        for pattern in doc_patterns:
+            if pattern in url_lower:
+                self.logger.debug(f"URL {url} matched documentation pattern: {pattern}")
+                return True
+        
+        # Additional heuristic: if base URL itself doesn't contain /docs/ 
+        # but we're in crawl mode, be more permissive with common doc indicators
+        if not self.sitemap_found and getattr(self, 'internal_crawling_attempted', False):
+            permissive_patterns = [
+                'readme',
+                'install',
+                'setup',
+                'config',
+                'usage',
+                'example',
+                'demo',
+                'intro',
+                'overview',
+                'getting',
+                'started',
+            ]
+            
+            for pattern in permissive_patterns:
+                if pattern in url_lower:
+                    self.logger.debug(f"URL {url} matched permissive documentation pattern: {pattern}")
+                    return True
+                    
+        
+        return False
 
     def _in_scope(self, url):
         """Check if URL is within the defined scope (auto-generated from base URL)"""
@@ -510,8 +758,22 @@ class AimdocSpider(scrapy.Spider):
         self.logger.info(f"Pages successfully scraped: {self.pages_scraped_count}")
         self.logger.info(f"Pages failed: {len(self.failed_pages)}")
         
-        # Log discovery errors if any
+        # Check for discovery failure (both sitemap and internal crawling)
         discovery_errors = getattr(self, 'discovery_errors', [])
+        sitemap_discovery_failed = not self.sitemap_found or self.urls_discovered_from_sitemaps == 0
+        total_urls_discovered = self.urls_discovered_from_sitemaps + self.urls_discovered_from_crawling
+        complete_discovery_failed = sitemap_discovery_failed and self.urls_discovered_from_crawling == 0
+        
+        # Store discovery status in stats for CLI to access
+        if hasattr(self.crawler.stats, 'set_value'):
+            self.crawler.stats.set_value('sitemap_discovery_failed', sitemap_discovery_failed)
+            self.crawler.stats.set_value('internal_crawling_attempted', self.internal_crawling_attempted)
+            self.crawler.stats.set_value('urls_discovered_from_crawling', self.urls_discovered_from_crawling)
+            self.crawler.stats.set_value('total_urls_discovered', total_urls_discovered)
+            self.crawler.stats.set_value('complete_discovery_failed', complete_discovery_failed)
+            self.crawler.stats.set_value('discovery_errors', discovery_errors)
+        
+        # Log discovery errors if any
         if discovery_errors:
             self.logger.warning(f"❌ DISCOVERY ERRORS ({len(discovery_errors)}):")
             for i, error in enumerate(discovery_errors, 1):
@@ -549,7 +811,14 @@ class AimdocSpider(scrapy.Spider):
                 "failed_pages": self.failed_pages,
                 "discovery_errors": discovery_errors,
                 "discovered_urls": list(self.discovered_urls),
-                "chapters": self.chapters
+                "chapters": self.chapters,
+                "sitemap_found": self.sitemap_found,
+                "urls_discovered_from_sitemaps": self.urls_discovered_from_sitemaps,
+                "internal_crawling_attempted": self.internal_crawling_attempted,
+                "urls_discovered_from_crawling": self.urls_discovered_from_crawling,
+                "total_urls_discovered": total_urls_discovered,
+                "sitemap_discovery_failed": sitemap_discovery_failed,
+                "complete_discovery_failed": complete_discovery_failed
             }
             
             with open(summary_file, 'w', encoding='utf-8') as f:
